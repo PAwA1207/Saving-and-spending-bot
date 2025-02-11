@@ -46,25 +46,29 @@ conn.commit()
 
 
 # Категории расходов
-CATEGORIES = ["Продукты", "Развлечения", "Бытовая химия", "Одежда", "Праздники",
-              "Жильё", "Учёба", "Проезд", "Подписки", "Внеплановые"]
+CATEGORIES = ["Продукты", "Развлечения", "Проезд", "Бытовая химия", "Налоги", "Одежда",
+              "Жильё", "Подписки", "Учёба", "Праздники", "Внеплановые"]
+
+#Кнопки главного меню
+MENU_BUTTONS = ["Добавить расход", "Добавить доход", "Статистика", "Мои расходы", "Мои доходы", "Справка"]
+
+# Типы транзакций
+TRANSACTION_TYPES = ["Расходы", "Доходы"]
 
 # Категории доходов
-INCOME_CATEGORIES = ["Зарплата", "Подарки", "Бизнес", "Другое"]
+INCOME_CATEGORIES = ["Зарплата", "Подарки", "Другое"]
 
-#Функция создания клавиатуры для выбора категорий
-def get_category_keyboard(categories):
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    buttons = []
-    for category in categories:
-        buttons.append(types.KeyboardButton(category))
-        if len(buttons) == 2:
-            keyboard.row(*buttons)
-            buttons.clear()
-    if buttons:
-        keyboard.row(*buttons)
-    keyboard.add(types.KeyboardButton("Назад"))
-    return keyboard
+# Типы статистики
+STATISTIC_TYPES = ["Общая", "По категориям"]
+
+# Виды периода для просмотра статистики
+PERIOD_TYPES = ["Сутки", "Неделя", "Месяц", "Год", "Всё время"]
+
+# Виды периода для просмотра всех поступлений, или трат
+IN_OR_EX_PERIOD_TYPES = ["За неделю", "За 2 недели", "За месяц", "За всё время"]
+
+
+
 
 # Обработчик команды /start
 @bot.message_handler(commands=['start'])
@@ -91,11 +95,20 @@ def help(message):
                                            )
                     )
 
+# Создание клавиатуры
+def create_reply_keyboard(buttons, need_back_button=True, row_width = 1):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=row_width)
+    keyboard_buttons = []
+    for button in buttons:
+        keyboard_buttons.append(button)
+    keyboard.add(*keyboard_buttons)
+    if need_back_button:
+        keyboard.add(types.KeyboardButton("Назад"))
+    return keyboard
 
 # Функция для главного меню
 def get_main_menu():
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add("Добавить расход", "Добавить доход", "Статистика", "Мои расходы", "Мои доходы", "Справка")
+    keyboard = create_reply_keyboard(MENU_BUTTONS,False, 2)
     return keyboard
 
 # Обработчик кнопок главного меню
@@ -103,21 +116,22 @@ def get_main_menu():
 def transaction_type(message):
     user_id = message.from_user.id
     if message.text == "Добавить расход":
-        bot.send_message(user_id, "Выберите категорию:", reply_markup=get_category_keyboard(CATEGORIES))
+        bot.send_message(user_id, "Выберите категорию:", reply_markup=create_reply_keyboard(CATEGORIES, True, 2))
         bot.register_next_step_handler(message, choose_category, "expense")
     else:
         user_id = message.from_user.id
-        bot.send_message(user_id, "Выберите категорию:", reply_markup=get_category_keyboard(INCOME_CATEGORIES))
+        bot.send_message(user_id, "Выберите категорию:", reply_markup=create_reply_keyboard(INCOME_CATEGORIES, True, 1))
         bot.register_next_step_handler(message, choose_income_category)
     
-
+# Выбор категории для добавления дохода
 def choose_income_category(message):
     if message.text == "Назад":
         bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
         return
 
+    # Если введенной категории нет в списке категорий
     if message.text not in INCOME_CATEGORIES:
-        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=get_category_keyboard(INCOME_CATEGORIES))
+        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=create_reply_keyboard(INCOME_CATEGORIES, True, 1))
         bot.register_next_step_handler(message, choose_income_category)
         return
 
@@ -126,13 +140,13 @@ def choose_income_category(message):
     bot.register_next_step_handler(message, enter_amount, "income", category)
 
 
-# Обработчик выбора категории
+# Выбор категории для добавления расхода
 def choose_category(message, trans_type):
     if message.text == "Назад":
         bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
         return
     if message.text not in CATEGORIES:
-        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=get_category_keyboard())
+        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=create_reply_keyboard(CATEGORIES, True, 2))
         bot.register_next_step_handler(message, choose_category, trans_type)
         return
     bot.send_message(message.chat.id, "Введите сумму:")
@@ -166,6 +180,7 @@ def enter_amount(message, trans_type, category):
         bot.send_message(message.chat.id, "Введите корректную сумму.")
         bot.register_next_step_handler(message, enter_amount, trans_type, category)
 
+# Создание кругового графика
 def generate_pie_chart(data, labels, title):
     # Создаем график
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -195,38 +210,33 @@ def generate_pie_chart(data, labels, title):
 # показать статистику для пользователя, или для группы
 @bot.message_handler(func=lambda message: message.text == "Статистика")
 def show_statistics_menu(message):
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add("Общая статистика", "Статистика по категориям", "Назад")
-    bot.send_message(message.chat.id, "Выберите тип статистики:", reply_markup=keyboard)
+    bot.send_message(message.chat.id, "Выберите тип статистики:", reply_markup=create_reply_keyboard(STATISTIC_TYPES,True, 1))
     bot.register_next_step_handler(message, choose_statistics_type)
 
-
+# проверка и обработка выбранной категории для вывода статистики
 def choose_statistics_type(message):
     if message.text == "Назад":
         bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
         return
 
-    if message.text not in ["Общая статистика", "Статистика по категориям"]:
-        bot.send_message(message.chat.id, "Выберите тип статистики из списка.", reply_markup=get_main_menu())
+    if message.text not in STATISTIC_TYPES:
+        bot.send_message(message.chat.id, "Выберите тип статистики из списка.")
+        bot.register_next_step_handler(message, choose_statistics_type)
         return
 
-    if message.text == "Общая статистика":
+    if message.text == "Общая":
         # Показываем клавиатуру для выбора периода
-        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        keyboard.add("Сутки", "Неделя", "Месяц", "Год", "Всё время", "Назад")
-        bot.send_message(message.chat.id, "Выберите период:", reply_markup=keyboard)
+        bot.send_message(message.chat.id, "Выберите период:", reply_markup=create_reply_keyboard(PERIOD_TYPES, True, 2))
         bot.register_next_step_handler(message, show_general_statistics)
 
-    elif message.text == "Статистика по категориям":
+    elif message.text == "По категориям":
         # Показываем клавиатуру для выбора типа транзакций
-        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        keyboard.add("Расходы", "Доходы", "Назад")
-        bot.send_message(message.chat.id, "Выберите тип транзакций:", reply_markup=keyboard)
+        bot.send_message(message.chat.id, "Выберите тип транзакций:", reply_markup=create_reply_keyboard(TRANSACTION_TYPES, True, 1))
         bot.register_next_step_handler(message, choose_category_statistics_type)
 
 def show_general_statistics(message):
     if message.text == "Назад":
-        bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
+        show_statistics_menu(message)
         return
 
     user_id = message.from_user.id
@@ -319,25 +329,25 @@ def show_general_statistics(message):
 
 def choose_category_statistics_type(message):
     if message.text == "Назад":
-        bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
+        show_statistics_menu(message)
         return
 
-    if message.text not in ["Расходы", "Доходы"]:
-        bot.send_message(message.chat.id, "Выберите тип транзакций из списка.", reply_markup=get_main_menu())
+    if message.text not in TRANSACTION_TYPES:
+        bot.send_message(message.chat.id, "Выберите тип транзакций из списка.")
+        bot.register_next_step_handler(message, choose_category_statistics_type)
         return
 
     transaction_type = "expense" if message.text == "Расходы" else "income"
 
     # Показываем клавиатуру для выбора периода
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add("Неделя", "Месяц", "Год", "Всё время", "Назад")
-    bot.send_message(message.chat.id, "Выберите период:", reply_markup=keyboard)
+    bot.send_message(message.chat.id, "Выберите период:", reply_markup=create_reply_keyboard(PERIOD_TYPES[1:], True, 1))
     bot.register_next_step_handler(message, show_category_statistics, transaction_type)
 
 
 def show_category_statistics(message, transaction_type):
     if message.text == "Назад":
-        bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
+        message.text = "По категориям"
+        choose_statistics_type(message)
         return
 
     user_id = message.from_user.id
@@ -356,7 +366,8 @@ def show_category_statistics(message, transaction_type):
         date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=100000)).isoformat()}'"
         time_format = "%Y"  # Года для статистики за всё время
     else:
-        bot.send_message(message.chat.id, "Выберите период из списка.", reply_markup=get_main_menu())
+        bot.send_message(message.chat.id, "Выберите период из списка.")
+        bot.register_next_step_handler(message, show_category_statistics, transaction_type)
         return
 
     cursor = conn.cursor()
@@ -639,11 +650,7 @@ def show_user_transactions(message):
     transaction_type = "expense" if message.text == "Мои расходы" else "income"
 
     # Запрашиваем период
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    keyboard.add(types.KeyboardButton("За неделю"), types.KeyboardButton("За 2 недели"))
-    keyboard.add(types.KeyboardButton("За месяц"), types.KeyboardButton("За всё время"))
-    keyboard.add(types.KeyboardButton("Назад"))
-    bot.send_message(user_id, "Выберите период:", reply_markup=keyboard)
+    bot.send_message(user_id, "Выберите период:", reply_markup=create_reply_keyboard(IN_OR_EX_PERIOD_TYPES, True, 2))
     bot.register_next_step_handler(message, process_period_selection, transaction_type)
 
 
