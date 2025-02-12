@@ -50,7 +50,7 @@ CATEGORIES = ["Продукты", "Развлечения", "Проезд", "Б�
               "Жильё", "Подписки", "Учёба", "Праздники", "Внеплановые"]
 
 #Кнопки главного меню
-MENU_BUTTONS = ["Добавить расход", "Добавить доход", "Статистика", "Мои расходы", "Мои доходы", "Справка"]
+MENU_BUTTONS = ["Добавить расход", "Добавить доход", "Статистика", "Справка"]
 
 # Типы транзакций
 TRANSACTION_TYPES = ["Расходы", "Доходы"]
@@ -59,7 +59,7 @@ TRANSACTION_TYPES = ["Расходы", "Доходы"]
 INCOME_CATEGORIES = ["Зарплата", "Подарки", "Другое"]
 
 # Типы статистики
-STATISTIC_TYPES = ["Общая", "По категориям"]
+STATISTIC_TYPES = ["Общая", "По категориям", "Мои расходы", "Мои доходы"]
 
 # Виды периода для просмотра статистики
 PERIOD_TYPES = ["Сутки", "Неделя", "Месяц", "Год", "Всё время"]
@@ -233,6 +233,14 @@ def choose_statistics_type(message):
         # Показываем клавиатуру для выбора типа транзакций
         bot.send_message(message.chat.id, "Выберите тип транзакций:", reply_markup=create_reply_keyboard(TRANSACTION_TYPES, True, 1))
         bot.register_next_step_handler(message, choose_category_statistics_type)
+    
+    elif message.text == "Мои расходы":
+        bot.send_message(message.chat.id, "Выберите период:", reply_markup=create_reply_keyboard(IN_OR_EX_PERIOD_TYPES, True, 2))
+        bot.register_next_step_handler(message, process_period_selection, "expense")
+
+    elif message.text == "Мои доходы":
+        bot.send_message(message.chat.id, "Выберите период:", reply_markup=create_reply_keyboard(IN_OR_EX_PERIOD_TYPES, True, 2))
+        bot.register_next_step_handler(message, process_period_selection, "income")
 
 def show_general_statistics(message):
     if message.text == "Назад":
@@ -259,7 +267,8 @@ def show_general_statistics(message):
     elif message.text == "Всё время":
         date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=100000)).isoformat()}'"
     else:
-        bot.send_message(message.chat.id, "Выберите период из списка.", reply_markup=get_main_menu())
+        bot.send_message(message.chat.id, "Выберите период из списка.")
+        bot.register_next_step_handler(message, show_general_statistics)
         return
 
     # Формируем запрос для получения данных
@@ -327,6 +336,7 @@ def show_general_statistics(message):
     )
     bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
 
+# Выбор категории для вывода статистики (расходы, или доходы)
 def choose_category_statistics_type(message):
     if message.text == "Назад":
         show_statistics_menu(message)
@@ -343,7 +353,7 @@ def choose_category_statistics_type(message):
     bot.send_message(message.chat.id, "Выберите период:", reply_markup=create_reply_keyboard(PERIOD_TYPES[1:], True, 1))
     bot.register_next_step_handler(message, show_category_statistics, transaction_type)
 
-
+# Показать статистику по категориям за выбранный период с графиком
 def show_category_statistics(message, transaction_type):
     if message.text == "Назад":
         message.text = "По категориям"
@@ -408,10 +418,10 @@ def show_category_statistics(message, transaction_type):
     img = generate_bar_chart_with_legend(all_dates, category_labels, values_by_category, transaction_type, message.text)
 
     # Отправка графика
-    bot.send_photo(message.chat.id, img, caption=f"📊 Статистика {transaction_type.lower()} по категориям:")
+    bot.send_photo(message.chat.id, img, caption=f"📊 Статистика {transaction_type.lower()} по категориям")
     bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
 
-
+# Создание столбчатой диаграммы с легендой
 def generate_bar_chart_with_legend(dates, categories, values, transaction_type, period):
     fig, ax = plt.subplots(figsize=(12, 8))
 
@@ -470,7 +480,7 @@ def set_group_name(message):
     group_name = message.text
     user_id = message.from_user.id
     cursor = conn.cursor()
-    # Проверяем, есть ли уже такая группа
+
     cursor.execute("SELECT group_id FROM groups WHERE name=?", (group_name,))
     group = cursor.fetchone()
 
@@ -481,6 +491,7 @@ def set_group_name(message):
     bot.send_message(user_id, "придумайте пароль для подключения к группе:")
     bot.register_next_step_handler(message, set_group_password, group_name)
 
+# Задать пароль для группы при создании
 def set_group_password(message, group_name):
     password = message.text
     user_id = message.from_user.id
@@ -498,6 +509,7 @@ def set_group_password(message, group_name):
     conn.commit()
     bot.send_message(user_id, f"Группа '{group_name}' создана!\nТеперь другие пользователи могут к ней присоединиться с помощью /join_group, введя пароль {password}")
 
+# Регистратор команды group_info для вывода информации о группе
 @bot.message_handler(commands=['group_info'])
 def show_group_info(message):
     user_id = message.from_user.id
@@ -529,7 +541,7 @@ def show_group_info(message):
         bot.send_message(user_id, f"Вы состоите в группе:\n"
                                   f"Название: {group_name}")
 
-#Присоединение к группе по команде
+# Присоединение к группе по команде
 @bot.message_handler(commands=['join_group'])
 def join_group(message):
     user_id = message.from_user.id
@@ -548,6 +560,7 @@ def check_group_membership(user_id):
     group = cursor.fetchone()
     return group and group[0] is not None
 
+# удаление/выход из группы по команде
 @bot.message_handler(commands=['leave_group'])
 def leave_group(message):
     user_id = message.from_user.id
@@ -598,6 +611,7 @@ def leave_group(message):
         # Отправляем сообщение пользователю
         bot.send_message(user_id, f"Вы покинули группу '{group_name}' и вернулись к личному бюджету.")
 
+# Подключение пользователя к группе, если она существует
 def process_group_join(message):
     group_name = message.text
     user_id = message.from_user.id
@@ -612,6 +626,7 @@ def process_group_join(message):
     bot.send_message(user_id, "Введите пароль для подключения к группе:")
     bot.register_next_step_handler(message, verify_group_password, group_id, group_name, group_password)
 
+# Проверка пароля, введенного пользователем при подключении к группе
 def verify_group_password(message, group_id, group_name, group_password):
     user_id = message.from_user.id
     entered_password = message.text
@@ -643,25 +658,8 @@ def verify_group_password(message, group_id, group_name, group_password):
     # Отправляем сообщение пользователю
     bot.send_message(user_id, f"Вы присоединились к группе '{group_name}'!")
 
-
-@bot.message_handler(func=lambda message: message.text in ["Мои расходы", "Мои доходы"])
-def show_user_transactions(message):
-    user_id = message.from_user.id
-    transaction_type = "expense" if message.text == "Мои расходы" else "income"
-
-    # Запрашиваем период
-    bot.send_message(user_id, "Выберите период:", reply_markup=create_reply_keyboard(IN_OR_EX_PERIOD_TYPES, True, 2))
-    bot.register_next_step_handler(message, process_period_selection, transaction_type)
-
-
-def process_period_selection(message, transaction_type):
-    user_id = message.from_user.id
-    if message.text == "Назад":
-        bot.send_message(user_id, "Главное меню", reply_markup=get_main_menu())
-        return
-    period = message.text
-
-    # Определяем дату начала периода
+def update_transaction_list(obj, transaction_type, period):
+    # Преобразуем период в дату начала
     if period == "За неделю":
         start_date = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
     elif period == "За 2 недели":
@@ -669,11 +667,14 @@ def process_period_selection(message, transaction_type):
     elif period == "За месяц":
         start_date = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
     elif period == "За всё время":
-        start_date = "1970-01-01"  # Далекая дата для "всё время"
+        start_date = "1970-01-01"
     else:
-        bot.send_message(user_id, "Выберите период из списка.", reply_markup=get_main_menu())
+        bot.send_message(obj.chat.id, "Неизвестный период. Вернитесь в главное меню.", reply_markup=get_main_menu())
         return
 
+    user_id = obj.from_user.id
+
+    # Запрашиваем данные за выбранный период
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id, amount, category, date FROM transactions "
@@ -684,12 +685,11 @@ def process_period_selection(message, transaction_type):
     conn.commit()
 
     if not transactions:
-        bot.send_message(user_id, f"У вас нет записанных {transaction_type}ов за выбранный период.", reply_markup=get_main_menu())
+        bot.send_message(user_id, f"У вас больше нет записанных {transaction_type}ов за выбранный период.", reply_markup=get_main_menu())
         return
 
+    # Формируем клавиатуру с актуальными данными
     keyboard = types.InlineKeyboardMarkup()
-
-    # Добавляем кнопки для удаления транзакций
     for transaction in transactions:
         transaction_id, amount, category, date = transaction
         keyboard.add(types.InlineKeyboardButton(
@@ -704,11 +704,31 @@ def process_period_selection(message, transaction_type):
     # Добавляем кнопку "Назад"
     keyboard.add(types.InlineKeyboardButton(text="Назад", callback_data="back_to_main_menu"))
 
-    bot.send_message(
-        user_id,
-        f"Ваши последние {transaction_type} за {period.lower()}. Нажмите, чтобы удалить:",
-        reply_markup=keyboard
-    )
+    # Отправляем обновленный список
+    if hasattr(obj, 'message'):  # Если это callback query
+        bot.edit_message_text(
+            chat_id=obj.message.chat.id,
+            message_id=obj.message.message_id,
+            text=f"Ваши последние {transaction_type}ы за {period.lower()}. Нажмите, чтобы удалить:",
+            reply_markup=keyboard
+        )
+    else:  # Если это обычное сообщение
+        bot.send_message(
+            chat_id=obj.chat.id,
+            text=f"Ваши последние {transaction_type}ы за {period.lower()}. Нажмите, чтобы удалить:",
+            reply_markup=keyboard
+        )
+
+# Определение периода для вывода списка доходов/расходов 
+def process_period_selection(message, transaction_type):
+    user_id = message.from_user.id
+    if message.text == "Назад":
+        bot.send_message(user_id, "Главное меню", reply_markup=get_main_menu())
+        return
+    period = message.text
+
+    update_transaction_list(message, transaction_type, period)
+
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_main_menu")
 def back_to_main_menu(call):
@@ -721,10 +741,24 @@ def delete_transaction(call):
     _, transaction_type, transaction_id = call.data.split("_")
     transaction_id = int(transaction_id)
 
+    # Получаем текст сообщения, чтобы извлечь период
+    message_text = call.message.text
+    period = None
+
+    for period_option in IN_OR_EX_PERIOD_TYPES:
+        if period_option.lower() in message_text.lower():
+            period = period_option
+            break
+
+    if not period:
+        bot.answer_callback_query(call.id, "Не удалось определить период.")
+        bot.send_message(call.message.chat.id, "Главное меню", reply_markup=get_main_menu())
+        return
+
     # Подтверждение удаления
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton(text="Да", callback_data=f"confirm_del_{transaction_type}_{transaction_id}"))
-    keyboard.add(types.InlineKeyboardButton(text="Нет", callback_data="cancel_delete"))
+    keyboard.add(types.InlineKeyboardButton(text="Да", callback_data=f"confirm_del_{transaction_type}_{transaction_id}_{period}"))
+    keyboard.add(types.InlineKeyboardButton(text="Нет", callback_data=f"cancel_del_{transaction_type}_{period}"))
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
@@ -732,16 +766,15 @@ def delete_transaction(call):
         reply_markup=keyboard
     )
 
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_del_"))
 def confirm_delete(call):
     parts = call.data.split("_")
-    if len(parts) != 4 or parts[0] != "confirm" or parts[1] != "del":
+    if len(parts) != 5 or parts[0] != "confirm" or parts[1] != "del":
         bot.answer_callback_query(call.id, "Ошибка: некорректный запрос.")
         bot.send_message(call.message.chat.id, "Главное меню", reply_markup=get_main_menu())
         return
-    
-    _, _, transaction_type, transaction_id = parts
+
+    _, _, transaction_type, transaction_id, period = parts
     try:
         transaction_id = int(transaction_id)
     except ValueError:
@@ -749,19 +782,36 @@ def confirm_delete(call):
         bot.send_message(call.message.chat.id, "Главное меню", reply_markup=get_main_menu())
         return
 
+    # Удаляем транзакцию из базы данных
     cursor = conn.cursor()
     cursor.execute("DELETE FROM transactions WHERE id=?", (transaction_id,))
     conn.commit()
+
+    # Отправляем уведомление об успешном удалении
     bot.answer_callback_query(call.id, f"{transaction_type.capitalize()} удален!")
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-    bot.send_message(call.message.chat.id, "Главное меню", reply_markup=get_main_menu())
+
+    # Обновляем список транзакций
+    update_transaction_list(call, transaction_type, period)
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "cancel_delete")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cancel_del_"))
 def cancel_delete(call):
+    # Разбираем callback_data
+    parts = call.data.split("_")
+    
+    # Проверяем, что количество частей соответствует ожидаемому
+    if len(parts) != 4 or parts[0] != "cancel" or parts[1] != "del":
+        bot.answer_callback_query(call.id, "Ошибка: некорректный запрос.")
+        bot.send_message(call.message.chat.id, "Главное меню", reply_markup=get_main_menu())
+        return
+    
+    _, _, transaction_type, period = parts
+    
+    # Уведомляем пользователя об отмене удаления
     bot.answer_callback_query(call.id, "Удаление отменено.")
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-    bot.send_message(call.message.chat.id, "Главное меню", reply_markup=get_main_menu())
+    
+    # Обновляем список транзакций
+    update_transaction_list(call, transaction_type, period)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("show_all_"))
@@ -796,6 +846,13 @@ def show_all_transactions(call):
 
 
 
-    
+
+# Переход в меню когда пользователь отправляет произвольное сообщение (должно быть в конце)
+@bot.message_handler(func=lambda message: True)
+def handle_any_message(message):
+    bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
+
 # Запуск бота
-bot.polling(none_stop=True)
+if __name__ == "__main__":
+    # Запускаем бота без отправки сообщений всем пользователям
+    bot.polling(none_stop=True)
