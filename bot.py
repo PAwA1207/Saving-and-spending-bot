@@ -44,19 +44,45 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS users (
                 )''')
 conn.commit()
 
+# Таблица базовых категорий
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS base_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT,  -- "income" или "expense"
+    name TEXT UNIQUE
+)
+''')
+
+# Таблица выбранных категорий
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS selected_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,  -- Если NULL, то это группа
+    group_id INTEGER, -- Если NULL, то это пользователь
+    type TEXT,        -- "income" или "expense"
+    name TEXT
+)
+''')
+conn.commit()
+
+# Категории доходов
+INCOME_CATEGORIES = ["Зарплата", "Подарки", "Прочее"]
 
 # Категории расходов
 CATEGORIES = ["Продукты", "Развлечения", "Проезд", "Бытовая химия", "Налоги", "Одежда",
               "Жильё", "Подписки", "Учёба", "Праздники", "Внеплановые"]
+
+# категории, доступные пользователю
+BASE_CATEGORIES = {
+    "income": ["Зарплата", "Подарки", "Бизнес", "Другое"],
+    "expense": ["Продукты", "Развлечения", "Проезд", "Бытовая химия", "Налоги", "Одежда", "Жильё", "Подписки", "Учёба", "Праздники", "Внеплановые"]
+}
 
 #Кнопки главного меню
 MENU_BUTTONS = ["Добавить расход", "Добавить доход", "Статистика", "Справка"]
 
 # Типы транзакций
 TRANSACTION_TYPES = ["Расходы", "Доходы"]
-
-# Категории доходов
-INCOME_CATEGORIES = ["Зарплата", "Подарки", "Другое"]
 
 # Типы статистики
 STATISTIC_TYPES = ["Общая", "По категориям", "Мои расходы", "Мои доходы"]
@@ -67,33 +93,10 @@ PERIOD_TYPES = ["Сутки", "Неделя", "Месяц", "Год", "Всё в
 # Виды периода для просмотра всех поступлений, или трат
 IN_OR_EX_PERIOD_TYPES = ["За неделю", "За 2 недели", "За месяц", "За всё время"]
 
-
-
-
-# Обработчик команды /start
-@bot.message_handler(commands=['start'])
-def start(message):
-    user_id = message.from_user.id
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, group_id) VALUES (?, ?)", (user_id, user_id))
+for category_type, categories in BASE_CATEGORIES.items():
+    for category_name in categories:
+        cursor.execute("INSERT OR IGNORE INTO base_categories (type, name) VALUES (?, ?)", (category_type, category_name))
     conn.commit()
-    
-    bot.send_message(user_id, "Привет! Я бот для учета доходов и расходов. Выберите действие:",
-                     reply_markup=get_main_menu())
-    
-
-@bot.message_handler(commands=['help'])
-@bot.message_handler(func=lambda message: message.text=="Справка")
-def help(message):
-    bot.send_message(message.from_user.id,("Ты можешь выбрать команду, нажать по ней, и она запустится. Или можешь ввести её самостоятельно.\n"
-                                           "Вот что я умею:\n"
-                                           "/start - запустить, или перезапустить бота.\n"
-                                           "/help - список всех команд\n"
-                                           "/create_group - создать группу для ведения общего бюджета\n"
-                                           "/join_group - подключиться к существующей группе\n"
-                                           "/leave_group - выйти из группы, в которой вы состоите\n"
-                                           "/group_info - Посмотреть данные группы"
-                                           )
-                    )
 
 # Создание клавиатуры
 def create_reply_keyboard(buttons, need_back_button=True, row_width = 1):
@@ -111,30 +114,18 @@ def get_main_menu():
     keyboard = create_reply_keyboard(MENU_BUTTONS,False, 2)
     return keyboard
 
-# Обработчик кнопок главного меню
-@bot.message_handler(func=lambda message: message.text in ["Добавить расход", "Добавить доход"])
-def transaction_type(message):
-    user_id = message.from_user.id
-    if message.text == "Добавить расход":
-        bot.send_message(user_id, "Выберите категорию:", reply_markup=create_reply_keyboard(CATEGORIES, True, 2))
-        bot.register_next_step_handler(message, choose_category, "expense")
-    else:
-        user_id = message.from_user.id
-        bot.send_message(user_id, "Выберите категорию:", reply_markup=create_reply_keyboard(INCOME_CATEGORIES, True, 1))
-        bot.register_next_step_handler(message, choose_income_category)
-    
 # Выбор категории для добавления дохода
 def choose_income_category(message):
     if message.text == "Назад":
         bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
         return
-
-    # Если введенной категории нет в списке категорий
-    if message.text not in INCOME_CATEGORIES:
-        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=create_reply_keyboard(INCOME_CATEGORIES, True, 1))
+    user_id = message.from_user.id
+    cursor.execute("SELECT name FROM selected_categories WHERE user_id=? AND type='income'", (user_id,))
+    available_categories = [row[0] for row in cursor.fetchall()]
+    if message.text not in available_categories:
+        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=create_reply_keyboard(available_categories, True, 1))
         bot.register_next_step_handler(message, choose_income_category)
         return
-
     category = message.text
     bot.send_message(message.chat.id, "Введите сумму:")
     bot.register_next_step_handler(message, enter_amount, "income", category)
@@ -145,8 +136,11 @@ def choose_category(message, trans_type):
     if message.text == "Назад":
         bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
         return
-    if message.text not in CATEGORIES:
-        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=create_reply_keyboard(CATEGORIES, True, 2))
+    user_id = message.from_user.id
+    cursor.execute("SELECT name FROM selected_categories WHERE user_id=? AND type='expense'", (user_id,))
+    available_categories = [row[0] for row in cursor.fetchall()]
+    if message.text not in available_categories:
+        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=create_reply_keyboard(available_categories, True, 2))
         bot.register_next_step_handler(message, choose_category, trans_type)
         return
     bot.send_message(message.chat.id, "Введите сумму:")
@@ -156,6 +150,9 @@ def choose_category(message, trans_type):
 # Обработчик ввода суммы
 def enter_amount(message, trans_type, category):
     try:
+        if message.text == "Назад":
+            bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
+            return
         amount = float(message.text)
         user_id = message.from_user.id
 
@@ -207,18 +204,12 @@ def generate_pie_chart(data, labels, title):
 
     return img
 
-# показать статистику для пользователя, или для группы
-@bot.message_handler(func=lambda message: message.text == "Статистика")
-def show_statistics_menu(message):
-    bot.send_message(message.chat.id, "Выберите тип статистики:", reply_markup=create_reply_keyboard(STATISTIC_TYPES,True, 1))
-    bot.register_next_step_handler(message, choose_statistics_type)
-
 # проверка и обработка выбранной категории для вывода статистики
 def choose_statistics_type(message):
     if message.text == "Назад":
         bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
         return
-
+    user_id = message.from_user.id
     if message.text not in STATISTIC_TYPES:
         bot.send_message(message.chat.id, "Выберите тип статистики из списка.")
         bot.register_next_step_handler(message, choose_statistics_type)
@@ -241,117 +232,6 @@ def choose_statistics_type(message):
     elif message.text == "Мои доходы":
         bot.send_message(message.chat.id, "Выберите период:", reply_markup=create_reply_keyboard(IN_OR_EX_PERIOD_TYPES, True, 2))
         bot.register_next_step_handler(message, process_period_selection, "income")
-
-def show_general_statistics(message):
-    if message.text == "Назад":
-        show_statistics_menu(message)
-        return
-
-    user_id = message.from_user.id
-    cursor = conn.cursor()
-
-    # Проверяем, состоит ли пользователь в группе
-    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
-    group = cursor.fetchone()
-    group_id = group[0] if group and group[0] else None
-
-    # Определяем фильтр даты в зависимости от выбранного периода
-    if message.text == "Сутки":
-        date_filter = f"date = '{datetime.date.today().isoformat()}'"
-    elif message.text == "Неделя":
-        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=7)).isoformat()}'"
-    elif message.text == "Месяц":
-        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=30)).isoformat()}'"
-    elif message.text == "Год":
-        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=365)).isoformat()}'"
-    elif message.text == "Всё время":
-        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=100000)).isoformat()}'"
-    else:
-        bot.send_message(message.chat.id, "Выберите период из списка.")
-        bot.register_next_step_handler(message, show_general_statistics)
-        return
-
-    # Формируем запрос для получения данных
-    if group_id:
-        income_query = f"SELECT SUM(amount) FROM transactions WHERE group_id=? AND type='income' AND {date_filter}"
-        expense_query = f"SELECT SUM(amount) FROM transactions WHERE group_id=? AND type='expense' AND {date_filter}"
-        category_query = f"""
-            SELECT category, type, SUM(amount) 
-            FROM transactions 
-            WHERE group_id=? AND {date_filter} 
-            GROUP BY category, type
-        """
-        query_params = (group_id,)
-    else:
-        income_query = f"SELECT SUM(amount) FROM transactions WHERE user_id=? AND type='income' AND {date_filter}"
-        expense_query = f"SELECT SUM(amount) FROM transactions WHERE user_id=? AND type='expense' AND {date_filter}"
-        category_query = f"""
-            SELECT category, type, SUM(amount) 
-            FROM transactions 
-            WHERE user_id=? AND {date_filter} 
-            GROUP BY category, type
-        """
-        query_params = (user_id,)
-
-    # Получаем сумму доходов и расходов
-    cursor.execute(income_query, query_params)
-    total_income = cursor.fetchone()[0] or 0
-    cursor.execute(expense_query, query_params)
-    total_expense = cursor.fetchone()[0] or 0
-
-    # Форматируем числа с разделением разрядов пробелами
-    total_income_formatted = "{:,.2f}".format(total_income).replace(",", " ")
-    total_expense_formatted = "{:,.2f}".format(total_expense).replace(",", " ")
-
-    # Получаем данные по категориям для доходов и расходов
-    cursor.execute(category_query, query_params)
-    category_data = cursor.fetchall()
-    conn.commit()
-
-    if not category_data:
-        bot.send_message(
-            message.chat.id,
-            f"За выбранный период ({message.text}) нет данных.",
-            reply_markup=get_main_menu()
-        )
-        return
-
-    # Разделяем данные на доходы и расходы
-    income_data = [(row[0], row[2]) for row in category_data if row[1] == 'income']
-    expense_data = [(row[0], row[2]) for row in category_data if row[1] == 'expense']
-
-    # Объединяем данные для графика
-    all_data = income_data + expense_data
-    labels = [f"{row[0]} ({'Доход' if row in income_data else 'Расход'})" for row in all_data]
-    values = [row[1] for row in all_data]
-
-    # Генерация графика
-    img = generate_pie_chart(values, labels, f"Финансы за {message.text}")
-
-    # Отправка графика и сообщения
-    bot.send_photo(
-        message.chat.id,
-        img,
-        caption=f"📊 Доход: {total_income_formatted} руб.\n💸 Расход: {total_expense_formatted} руб."
-    )
-    bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
-
-# Выбор категории для вывода статистики (расходы, или доходы)
-def choose_category_statistics_type(message):
-    if message.text == "Назад":
-        show_statistics_menu(message)
-        return
-
-    if message.text not in TRANSACTION_TYPES:
-        bot.send_message(message.chat.id, "Выберите тип транзакций из списка.")
-        bot.register_next_step_handler(message, choose_category_statistics_type)
-        return
-
-    transaction_type = "expense" if message.text == "Расходы" else "income"
-
-    # Показываем клавиатуру для выбора периода
-    bot.send_message(message.chat.id, "Выберите период:", reply_markup=create_reply_keyboard(PERIOD_TYPES[1:], True, 1))
-    bot.register_next_step_handler(message, show_category_statistics, transaction_type)
 
 # Показать статистику по категориям за выбранный период с графиком
 def show_category_statistics(message, transaction_type):
@@ -468,12 +348,116 @@ def generate_bar_chart_with_legend(dates, categories, values, transaction_type, 
 
     return img
 
-#Создание группы по команде
-@bot.message_handler(commands=['create_group'])
-def create_group(message):
+def show_general_statistics(message):
+    if message.text == "Назад":
+        show_statistics_menu(message)
+        return
+
     user_id = message.from_user.id
-    bot.send_message(user_id, "Введите название новой группы:")
-    bot.register_next_step_handler(message, set_group_name)
+    cursor = conn.cursor()
+
+    # Проверяем, состоит ли пользователь в группе
+    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
+    group = cursor.fetchone()
+    group_id = group[0] if group and group[0] else None
+
+    # Определяем фильтр даты в зависимости от выбранного периода
+    if message.text == "Сутки":
+        date_filter = f"date = '{datetime.date.today().isoformat()}'"
+    elif message.text == "Неделя":
+        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=7)).isoformat()}'"
+    elif message.text == "Месяц":
+        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=30)).isoformat()}'"
+    elif message.text == "Год":
+        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=365)).isoformat()}'"
+    elif message.text == "Всё время":
+        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=100000)).isoformat()}'"
+    else:
+        bot.send_message(message.chat.id, "Выберите период из списка.")
+        bot.register_next_step_handler(message, show_general_statistics)
+        return
+
+    # Формируем запрос для получения данных
+    if group_id:
+        income_query = f"SELECT SUM(amount) FROM transactions WHERE group_id=? AND type='income' AND {date_filter}"
+        expense_query = f"SELECT SUM(amount) FROM transactions WHERE group_id=? AND type='expense' AND {date_filter}"
+        category_query = f"""
+            SELECT category, type, SUM(amount) 
+            FROM transactions 
+            WHERE group_id=? AND {date_filter} 
+            GROUP BY category, type
+        """
+        query_params = (group_id,)
+    else:
+        income_query = f"SELECT SUM(amount) FROM transactions WHERE user_id=? AND type='income' AND {date_filter}"
+        expense_query = f"SELECT SUM(amount) FROM transactions WHERE user_id=? AND type='expense' AND {date_filter}"
+        category_query = f"""
+            SELECT category, type, SUM(amount) 
+            FROM transactions 
+            WHERE user_id=? AND {date_filter} 
+            GROUP BY category, type
+        """
+        query_params = (user_id,)
+
+    # Получаем сумму доходов и расходов
+    cursor.execute(income_query, query_params)
+    total_income = cursor.fetchone()[0] or 0
+    cursor.execute(expense_query, query_params)
+    total_expense = cursor.fetchone()[0] or 0
+
+    # Форматируем числа с разделением разрядов пробелами
+    total_income_formatted = "{:,.2f}".format(total_income).replace(",", " ")
+    total_expense_formatted = "{:,.2f}".format(total_expense).replace(",", " ")
+
+    # Получаем данные по категориям для доходов и расходов
+    cursor.execute(category_query, query_params)
+    category_data = cursor.fetchall()
+    conn.commit()
+
+    if not category_data:
+        bot.send_message(
+            message.chat.id,
+            f"За выбранный период ({message.text}) нет данных.",
+            reply_markup=get_main_menu()
+        )
+        return
+
+    # Разделяем данные на доходы и расходы
+    income_data = [(row[0], row[2]) for row in category_data if row[1] == 'income']
+    expense_data = [(row[0], row[2]) for row in category_data if row[1] == 'expense']
+
+    # Объединяем данные для графика
+    all_data = income_data + expense_data
+    labels = [f"{row[0]} ({'Доход' if row in income_data else 'Расход'})" for row in all_data]
+    values = [row[1] for row in all_data]
+
+    # Генерация графика
+    img = generate_pie_chart(values, labels, f"Финансы за {message.text}")
+
+    # Отправка графика и сообщения
+    bot.send_photo(
+        message.chat.id,
+        img,
+        caption=f"📊 Доход: {total_income_formatted} руб.\n💸 Расход: {total_expense_formatted} руб."
+    )
+    bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
+
+# Выбор категории для вывода статистики (расходы, или доходы)
+def choose_category_statistics_type(message):
+    if message.text == "Назад":
+        show_statistics_menu(message)
+        return
+
+    if message.text not in TRANSACTION_TYPES:
+        bot.send_message(message.chat.id, "Выберите тип транзакций из списка.")
+        bot.register_next_step_handler(message, choose_category_statistics_type)
+        return
+
+    transaction_type = "expense" if message.text == "Расходы" else "income"
+
+    # Показываем клавиатуру для выбора периода
+    bot.send_message(message.chat.id, "Выберите период:", reply_markup=create_reply_keyboard(PERIOD_TYPES[1:], True, 1))
+    bot.register_next_step_handler(message, show_category_statistics, transaction_type)
 
 # Сохранение группы    
 def set_group_name(message):
@@ -509,107 +493,11 @@ def set_group_password(message, group_name):
     conn.commit()
     bot.send_message(user_id, f"Группа '{group_name}' создана!\nТеперь другие пользователи могут к ней присоединиться с помощью /join_group, введя пароль {password}")
 
-# Регистратор команды group_info для вывода информации о группе
-@bot.message_handler(commands=['group_info'])
-def show_group_info(message):
-    user_id = message.from_user.id
-    cursor = conn.cursor()
-
-    # Проверяем, состоит ли пользователь в группе
-    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
-    group = cursor.fetchone()
-    if not group or not group[0]:
-        bot.send_message(user_id, "Вы не состоите ни в одной группе.")
-        return
-
-    group_id = group[0]
-
-    # Проверяем, является ли пользователь владельцем группы
-    cursor.execute("SELECT name, password FROM groups WHERE group_id=? AND owner_id=?", (group_id, user_id))
-    owner_group = cursor.fetchone()
-
-    if owner_group:
-        # Пользователь является владельцем группы
-        group_name, group_password = owner_group
-        bot.send_message(user_id, f"Информация о вашей группе:\n"
-                                  f"Название: {group_name}\n"
-                                  f"Пароль: {group_password}")
-    else:
-        # Пользователь принадлежит к группе, но не является её создателем
-        cursor.execute("SELECT name FROM groups WHERE group_id=?", (group_id,))
-        group_name = cursor.fetchone()[0]
-        bot.send_message(user_id, f"Вы состоите в группе:\n"
-                                  f"Название: {group_name}")
-
-# Присоединение к группе по команде
-@bot.message_handler(commands=['join_group'])
-def join_group(message):
-    user_id = message.from_user.id
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM groups")
-    groups = cursor.fetchall()
-    if not groups:
-        bot.send_message(user_id, "Групп пока нет. Создайте свою с помощью /create_group")
-        return
-    bot.send_message(user_id, "Введите название группы для присоединения.")
-    bot.register_next_step_handler(message, process_group_join)
-
 def check_group_membership(user_id):
     cursor = conn.cursor()
     cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
     group = cursor.fetchone()
     return group and group[0] is not None
-
-# удаление/выход из группы по команде
-@bot.message_handler(commands=['leave_group'])
-def leave_group(message):
-    user_id = message.from_user.id
-    cursor = conn.cursor()
-
-    # Проверяем, к какой группе принадлежит пользователь
-    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
-    group = cursor.fetchone()
-    
-    if not group or group[0] is None:
-        bot.send_message(user_id, "Вы не состоите ни в одной группе.")
-        return
-
-    group_id = group[0]
-
-    # Получаем данные группы (название и ID владельца)
-    cursor.execute("SELECT name, owner_id FROM groups WHERE group_id=?", (group_id,))
-    group_data = cursor.fetchone()
-    if not group_data:
-        bot.send_message(user_id, "Произошла ошибка. Группа не найдена.")
-        return
-
-    group_name, owner_id = group_data
-
-    # Получаем информацию о пользователе, который покидает группу
-    user_info = message.from_user
-    user_mention = user_info.username if user_info.username else user_info.first_name
-
-    # Проверяем, является ли пользователь владельцем группы
-    if owner_id == user_id:
-        # Владелец удаляет группу
-        cursor.execute("DELETE FROM groups WHERE group_id=?", (group_id,))
-        cursor.execute("UPDATE users SET group_id=NULL WHERE group_id=?", (group_id,))
-        conn.commit()
-        bot.send_message(user_id, f"Группа '{group_name}' удалена. Вы вернулись к личному бюджету.")
-    else:
-        # Участник покидает группу
-        cursor.execute("UPDATE users SET group_id=NULL WHERE user_id=?", (user_id,))
-        conn.commit()
-
-        # Отправляем уведомление владельцу группы
-        bot.send_message(
-            owner_id,
-            f"⚠️ Пользователь [{user_mention}](tg://user?id={user_id}) покинул группу '{group_name}'.",
-            parse_mode="Markdown"
-        )
-
-        # Отправляем сообщение пользователю
-        bot.send_message(user_id, f"Вы покинули группу '{group_name}' и вернулись к личному бюджету.")
 
 # Подключение пользователя к группе, если она существует
 def process_group_join(message):
@@ -723,12 +611,323 @@ def update_transaction_list(obj, transaction_type, period):
 def process_period_selection(message, transaction_type):
     user_id = message.from_user.id
     if message.text == "Назад":
-        bot.send_message(user_id, "Главное меню", reply_markup=get_main_menu())
+        show_statistics_menu(message)
         return
     period = message.text
 
     update_transaction_list(message, transaction_type, period)
 
+def choose_category_type_to_manage(message):
+    if message.text == "Назад":
+        bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
+        return
+    category_type = message.text.lower()
+    if category_type not in ["расходы", "доходы"]:
+        bot.send_message(message.chat.id, "Выберите тип категорий из списка.", reply_markup=get_main_menu())
+        return
+    category_type = "expense" if category_type == "расходы" else "income"
+    show_selected_categories(message, category_type)
+
+def show_selected_categories(message, category_type):
+    user_id = message.from_user.id
+    cursor.execute("""
+    SELECT name FROM selected_categories 
+    WHERE user_id=? AND type=?
+    """, (user_id, category_type))
+    selected_categories = [row[0] for row in cursor.fetchall()]
+
+    keyboard = create_reply_keyboard(selected_categories, False, 2)
+    keyboard.add("Добавить категорию", "Удалить категорию", "Назад")
+
+    bot.send_message(user_id, f"Ваши выбранные {category_type}:", reply_markup=keyboard)
+    bot.register_next_step_handler(message, manage_selected_categories, category_type, selected_categories)
+
+def manage_selected_categories(message, category_type, selected_categories):
+    user_id = message.from_user.id
+    action = message.text
+    if action == "Назад":
+        message.text = "back"
+        manage_categories(message)
+        return
+    
+    if action == "Добавить категорию":
+        add_category(message, category_type, selected_categories)
+    elif action == "Удалить категорию":
+        delete_category(message, category_type, selected_categories)
+    else:
+        bot.send_message(user_id, "Выберите действие из списка.", reply_markup=get_main_menu())
+
+def add_category(message, category_type, selected_categories):
+    user_id = message.from_user.id
+    # Получаем базовые категории, которых нет в выбранных
+    cursor.execute("""
+    SELECT name FROM base_categories 
+    WHERE type=? AND name NOT IN ({})
+    """.format(",".join(["?"] * len(selected_categories))), [category_type] + selected_categories)
+    base_categories = [row[0] for row in cursor.fetchall()]
+
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for category in base_categories:
+        keyboard.add(types.KeyboardButton(category))
+    keyboard.add("Другое", "Назад")
+
+    bot.send_message(user_id, "Выберите категорию для добавления:", reply_markup=keyboard)
+    bot.register_next_step_handler(message, process_add_category, category_type, selected_categories)
+
+def process_add_category(message, category_type, selected_categories):
+    if message.text == "Назад":
+        show_selected_categories(message, category_type)
+        return
+    if message.text == "Другое":
+        bot.send_message(message.chat.id, "Введите название новой категории:")
+        bot.register_next_step_handler(message, add_custom_category, category_type, selected_categories)
+        return
+    new_category = message.text
+    user_id = message.from_user.id
+    cursor.execute("""
+    INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)
+    """, (user_id, category_type, new_category))
+    conn.commit()
+    bot.send_message(message.chat.id, f"Категория '{new_category}' добавлена!")
+    show_selected_categories(message, category_type)
+
+def add_custom_category(message, category_type, selected_categories):
+    user_id = message.from_user.id
+    custom_category = message.text.strip()
+    
+    if not custom_category:
+        bot.send_message(user_id, "Название категории не может быть пустым. Попробуйте снова.")
+        bot.register_next_step_handler(message, add_custom_category, category_type, selected_categories)
+        return
+    
+    # Проверяем, что категория еще не существует
+    cursor.execute("""
+    SELECT COUNT(*) FROM selected_categories 
+    WHERE user_id=? AND type=? AND name=?
+    """, (user_id, category_type, custom_category))
+    if cursor.fetchone()[0] > 0:
+        bot.send_message(user_id, f"Категория '{custom_category}' уже существует!")
+        show_selected_categories(message, category_type)
+        return
+    
+    # Добавляем новую категорию
+    cursor.execute("""
+    INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)
+    """, (user_id, category_type, custom_category))
+    conn.commit()
+    
+    bot.send_message(user_id, f"Категория '{custom_category}' успешно добавлена!")
+    show_selected_categories(message, category_type)
+
+def delete_category(message, category_type, selected_categories):
+    user_id = message.from_user.id
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for category in selected_categories:
+        keyboard.add(types.KeyboardButton(category))
+    keyboard.add("Назад")
+
+    bot.send_message(user_id, "Выберите категорию для удаления:", reply_markup=keyboard)
+    bot.register_next_step_handler(message, process_delete_category, category_type)
+
+def process_delete_category(message, category_type):
+    if message.text == "Назад":
+        show_selected_categories(message, category_type)
+        return
+    category_to_delete = message.text
+    user_id = message.from_user.id
+    cursor.execute("""
+    DELETE FROM selected_categories 
+    WHERE user_id=? AND type=? AND name=?
+    """, (user_id, category_type, category_to_delete))
+    conn.commit()
+    bot.send_message(message.chat.id, f"Категория '{category_to_delete}' удалена!")
+    show_selected_categories(message, category_type)
+
+
+
+#\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\ОБРАБОТЧИКИ///////////////////////////////////////////////
+
+
+# Обработчик команды /start
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.from_user.id
+
+    # Добавляем пользователя в таблицу users, если его там еще нет
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, group_id) VALUES (?, ?)", (user_id, user_id))
+
+    # Проверяем, есть ли уже выбранные категории для пользователя
+    cursor.execute("SELECT COUNT(*) FROM selected_categories WHERE user_id=?", (user_id,))
+    if cursor.fetchone()[0] == 0:
+        # Добавляем стартовые категории для доходов
+        starter_income_categories = ["Зарплата", "Другое"]
+        for category in starter_income_categories:
+            cursor.execute(
+                "INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)",
+                (user_id, "income", category)
+            )
+
+        # Добавляем стартовые категории для расходов
+        starter_expense_categories = [
+            "Продукты", "Развлечения", "Налоги", "Одежда", "Жильё", "Внеплановые"
+        ]
+        for category in starter_expense_categories:
+            cursor.execute(
+                "INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)",
+                (user_id, "expense", category)
+            )
+
+        conn.commit()
+
+    bot.send_message(user_id, "Привет! Я бот для учета доходов и расходов. Выберите действие:", reply_markup=get_main_menu())
+    
+
+@bot.message_handler(commands=['help'])
+@bot.message_handler(func=lambda message: message.text=="Справка")
+def help(message):
+    bot.send_message(message.from_user.id,("Ты можешь выбрать команду, нажать по ней, и она запустится. Или можешь ввести её самостоятельно.\n"
+                                           "Вот что я умею:\n"
+                                           "/start - запустить, или перезапустить бота.\n"
+                                           "/help - список всех команд\n"
+                                           "/categories - меню редактирования категорий\n"
+                                           "/create_group - создать группу для ведения общего бюджета\n"
+                                           "/join_group - подключиться к существующей группе\n"
+                                           "/leave_group - выйти из группы, в которой вы состоите\n"
+                                           "/group_info - Посмотреть данные группы"
+                                           )
+                    )
+
+@bot.message_handler(commands=['categories'])
+def manage_categories(message):
+    user_id = message.from_user.id
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add("Расходы", "Доходы", "Назад")
+    bot.send_message(user_id, "Выберите тип категорий для управления:", reply_markup=keyboard)
+    bot.register_next_step_handler(message, choose_category_type_to_manage)
+
+# Обработчик кнопок главного меню
+@bot.message_handler(func=lambda message: message.text in ["Добавить расход", "Добавить доход"])
+def transaction_type(message):
+    user_id = message.from_user.id
+    if message.text == "Добавить расход":
+        cursor.execute("SELECT name FROM selected_categories WHERE user_id=? AND type='expense'", (user_id,))
+        categories = [row[0] for row in cursor.fetchall()]
+        bot.send_message(user_id, "Выберите категорию:", reply_markup=create_reply_keyboard(categories, True, 2))
+        bot.register_next_step_handler(message, choose_category, "expense")
+    else:
+        cursor.execute("SELECT name FROM selected_categories WHERE user_id=? AND type='income'", (user_id,))
+        categories = [row[0] for row in cursor.fetchall()]
+        bot.send_message(user_id, "Выберите категорию:", reply_markup=create_reply_keyboard(categories, True, 1))
+        bot.register_next_step_handler(message, choose_income_category)
+
+# показать статистику для пользователя, или для группы
+@bot.message_handler(func=lambda message: message.text == "Статистика")
+def show_statistics_menu(message):
+    bot.send_message(message.chat.id, "Выберите тип статистики:", reply_markup=create_reply_keyboard(STATISTIC_TYPES,True, 1))
+    bot.register_next_step_handler(message, choose_statistics_type)
+
+#Создание группы по команде
+@bot.message_handler(commands=['create_group'])
+def create_group(message):
+    user_id = message.from_user.id
+    bot.send_message(user_id, "Введите название новой группы:")
+    bot.register_next_step_handler(message, set_group_name)
+
+# Регистратор команды group_info для вывода информации о группе
+@bot.message_handler(commands=['group_info'])
+def show_group_info(message):
+    user_id = message.from_user.id
+    cursor = conn.cursor()
+
+    # Проверяем, состоит ли пользователь в группе
+    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
+    group = cursor.fetchone()
+    if not group or not group[0]:
+        bot.send_message(user_id, "Вы не состоите ни в одной группе.")
+        return
+
+    group_id = group[0]
+
+    # Проверяем, является ли пользователь владельцем группы
+    cursor.execute("SELECT name, password FROM groups WHERE group_id=? AND owner_id=?", (group_id, user_id))
+    owner_group = cursor.fetchone()
+
+    if owner_group:
+        # Пользователь является владельцем группы
+        group_name, group_password = owner_group
+        bot.send_message(user_id, f"Информация о вашей группе:\n"
+                                  f"Название: {group_name}\n"
+                                  f"Пароль: {group_password}")
+    else:
+        # Пользователь принадлежит к группе, но не является её создателем
+        cursor.execute("SELECT name FROM groups WHERE group_id=?", (group_id,))
+        group_name = cursor.fetchone()[0]
+        bot.send_message(user_id, f"Вы состоите в группе:\n"
+                                  f"Название: {group_name}")
+
+# Присоединение к группе по команде
+@bot.message_handler(commands=['join_group'])
+def join_group(message):
+    user_id = message.from_user.id
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM groups")
+    groups = cursor.fetchall()
+    if not groups:
+        bot.send_message(user_id, "Групп пока нет. Создайте свою с помощью /create_group")
+        return
+    bot.send_message(user_id, "Введите название группы для присоединения.")
+    bot.register_next_step_handler(message, process_group_join)
+
+# удаление/выход из группы по команде
+@bot.message_handler(commands=['leave_group'])
+def leave_group(message):
+    user_id = message.from_user.id
+    cursor = conn.cursor()
+
+    # Проверяем, к какой группе принадлежит пользователь
+    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
+    group = cursor.fetchone()
+    
+    if not group or group[0] is None:
+        bot.send_message(user_id, "Вы не состоите ни в одной группе.")
+        return
+
+    group_id = group[0]
+
+    # Получаем данные группы (название и ID владельца)
+    cursor.execute("SELECT name, owner_id FROM groups WHERE group_id=?", (group_id,))
+    group_data = cursor.fetchone()
+    if not group_data:
+        bot.send_message(user_id, "Произошла ошибка. Группа не найдена.")
+        return
+
+    group_name, owner_id = group_data
+
+    # Получаем информацию о пользователе, который покидает группу
+    user_info = message.from_user
+    user_mention = user_info.username if user_info.username else user_info.first_name
+
+    # Проверяем, является ли пользователь владельцем группы
+    if owner_id == user_id:
+        # Владелец удаляет группу
+        cursor.execute("DELETE FROM groups WHERE group_id=?", (group_id,))
+        cursor.execute("UPDATE users SET group_id=NULL WHERE group_id=?", (group_id,))
+        conn.commit()
+        bot.send_message(user_id, f"Группа '{group_name}' удалена. Вы вернулись к личному бюджету.")
+    else:
+        # Участник покидает группу
+        cursor.execute("UPDATE users SET group_id=NULL WHERE user_id=?", (user_id,))
+        conn.commit()
+
+        # Отправляем уведомление владельцу группы
+        bot.send_message(
+            owner_id,
+            f"⚠️ Пользователь [{user_mention}](tg://user?id={user_id}) покинул группу '{group_name}'.",
+            parse_mode="Markdown"
+        )
+
+        # Отправляем сообщение пользователю
+        bot.send_message(user_id, f"Вы покинули группу '{group_name}' и вернулись к личному бюджету.")
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_main_menu")
 def back_to_main_menu(call):
