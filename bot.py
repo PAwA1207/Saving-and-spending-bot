@@ -54,15 +54,13 @@ CREATE TABLE IF NOT EXISTS base_categories (
 ''')
 
 # Таблица выбранных категорий
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS selected_categories (
+cursor.execute('''CREATE TABLE IF NOT EXISTS selected_categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,  -- Если NULL, то это группа
-    group_id INTEGER, -- Если NULL, то это пользователь
-    type TEXT,        -- "income" или "expense"
-    name TEXT
-)
-''')
+    user_id INTEGER,       -- ID пользователя (NULL, если категория принадлежит группе)
+    group_id INTEGER,      -- ID группы (NULL, если категория принадлежит пользователю)
+    type TEXT,             -- Тип категории: "income" или "expense"
+    name TEXT              -- Название категории
+)''')
 conn.commit()
 
 # Категории доходов
@@ -114,35 +112,41 @@ def get_main_menu():
     keyboard = create_reply_keyboard(MENU_BUTTONS,False, 2)
     return keyboard
 
+def get_categories(user_id, category_type):
+    cursor = conn.cursor()
+    # Проверяем, состоит ли пользователь в группе
+    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
+    group = cursor.fetchone()
+    group_id = group[0] if group and group[0] else None
+
+    if group_id:
+        # Получаем категории группы
+        cursor.execute(
+            "SELECT name FROM selected_categories WHERE group_id=? AND type=?",
+            (group_id, category_type)
+        )
+    else:
+        # Получаем категории пользователя
+        cursor.execute(
+            "SELECT name FROM selected_categories WHERE user_id=? AND type=?",
+            (user_id, category_type)
+        )
+
+    categories = [row[0] for row in cursor.fetchall()]
+    return categories
+
 # Выбор категории для добавления дохода
 def choose_income_category(message):
     if message.text == "Назад":
         bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
         return
-
     user_id = message.from_user.id
-    cursor = conn.cursor()
-
-    # Получаем категории пользователя/группы
-    cursor.execute("""
-        SELECT name FROM selected_categories 
-        WHERE (user_id=? OR group_id=(SELECT group_id FROM users WHERE user_id=?)) AND type='income'
-    """, (user_id, user_id))
-    categories = [row[0] for row in cursor.fetchall()]
-
-    if not categories:
-        bot.send_message(message.chat.id, "Список категорий пуст. Добавьте новые категории.")
-        return
-
-    if message.text not in categories:
-        bot.send_message(
-            message.chat.id,
-            "Пожалуйста, выберите категорию из списка.",
-            reply_markup=create_reply_keyboard(categories, True, 1)
-        )
+    cursor.execute("SELECT name FROM selected_categories WHERE user_id=? AND type='income'", (user_id,))
+    available_categories = [row[0] for row in cursor.fetchall()]
+    if message.text not in available_categories:
+        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=create_reply_keyboard(available_categories, True, 1))
         bot.register_next_step_handler(message, choose_income_category)
         return
-
     category = message.text
     bot.send_message(message.chat.id, "Введите сумму:")
     bot.register_next_step_handler(message, enter_amount, "income", category)
@@ -153,60 +157,47 @@ def choose_category(message, trans_type):
     if message.text == "Назад":
         bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
         return
-
     user_id = message.from_user.id
-    cursor = conn.cursor()
-
-    # Получаем категории пользователя/группы
-    cursor.execute("""
-        SELECT name FROM selected_categories 
-        WHERE (user_id=? OR group_id=(SELECT group_id FROM users WHERE user_id=?)) AND type=?
-    """, (user_id, user_id, trans_type))
-    categories = [row[0] for row in cursor.fetchall()]
-
-    if not categories:
-        bot.send_message(message.chat.id, "Список категорий пуст. Добавьте новые категории.")
-        return
-
-    if message.text not in categories:
-        bot.send_message(
-            message.chat.id,
-            "Пожалуйста, выберите категорию из списка.",
-            reply_markup=create_reply_keyboard(categories, True, 2)
-        )
+    cursor.execute("SELECT name FROM selected_categories WHERE user_id=? AND type='expense'", (user_id,))
+    available_categories = [row[0] for row in cursor.fetchall()]
+    if message.text not in available_categories:
+        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=create_reply_keyboard(available_categories, True, 2))
         bot.register_next_step_handler(message, choose_category, trans_type)
         return
-
     bot.send_message(message.chat.id, "Введите сумму:")
     bot.register_next_step_handler(message, enter_amount, trans_type, message.text)
 
+def notify_group_members(group_id, transaction_details):
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE group_id=?", (group_id,))
+    members = cursor.fetchall()
+    for member in members:
+        member_id = member[0]
+        bot.send_message(member_id, transaction_details)
 
 # Обработчик ввода суммы
 def enter_amount(message, trans_type, category):
     try:
-        if message.text == "Назад":
-            bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
-            return
         amount = float(message.text)
         user_id = message.from_user.id
-
         cursor = conn.cursor()
+        
+        # Проверяем, состоит ли пользователь в группе
         cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
         group = cursor.fetchone()
-
-        if not group or not group[0]:
-            bot.send_message(user_id, "Вы не состоите в группе! Используйте /create_group или /join_group.")
-            return
-
-        group_id = group[0]
-
+        group_id = group[0] if group and group[0] else None
+        
+        # Добавляем транзакцию
         cursor.execute(
             "INSERT INTO transactions (user_id, group_id, amount, category, type, date) VALUES (?, ?, ?, ?, ?, ?)",
             (user_id, group_id, amount, category, trans_type, datetime.date.today().isoformat())
         )
         conn.commit()
-
+        
         bot.send_message(user_id, "Запись успешно добавлена!", reply_markup=get_main_menu())
+        if group_id:
+            notify_group_members(group_id, f"Новая транзакция: {amount} руб. ({category})")
+    
     except ValueError:
         bot.send_message(message.chat.id, "Введите корректную сумму.")
         bot.register_next_step_handler(message, enter_amount, trans_type, category)
@@ -395,7 +386,7 @@ def show_general_statistics(message):
     group = cursor.fetchone()
     group_id = group[0] if group and group[0] else None
 
-    # Определяем фильтр даты в зависимости от выбранного периода
+    # Определяем фильтр даты
     if message.text == "Сутки":
         date_filter = f"date = '{datetime.date.today().isoformat()}'"
     elif message.text == "Неделя":
@@ -407,8 +398,7 @@ def show_general_statistics(message):
     elif message.text == "Всё время":
         date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=100000)).isoformat()}'"
     else:
-        bot.send_message(message.chat.id, "Выберите период из списка.")
-        bot.register_next_step_handler(message, show_general_statistics)
+        bot.send_message(message.chat.id, "Выберите период из списка.", reply_markup=get_main_menu())
         return
 
     # Формируем запрос для получения данных
@@ -416,20 +406,20 @@ def show_general_statistics(message):
         income_query = f"SELECT SUM(amount) FROM transactions WHERE group_id=? AND type='income' AND {date_filter}"
         expense_query = f"SELECT SUM(amount) FROM transactions WHERE group_id=? AND type='expense' AND {date_filter}"
         category_query = f"""
-            SELECT category, type, SUM(amount) 
-            FROM transactions 
-            WHERE group_id=? AND {date_filter} 
-            GROUP BY category, type
+        SELECT category, type, SUM(amount) 
+        FROM transactions 
+        WHERE group_id=? AND {date_filter} 
+        GROUP BY category, type
         """
         query_params = (group_id,)
     else:
         income_query = f"SELECT SUM(amount) FROM transactions WHERE user_id=? AND type='income' AND {date_filter}"
         expense_query = f"SELECT SUM(amount) FROM transactions WHERE user_id=? AND type='expense' AND {date_filter}"
         category_query = f"""
-            SELECT category, type, SUM(amount) 
-            FROM transactions 
-            WHERE user_id=? AND {date_filter} 
-            GROUP BY category, type
+        SELECT category, type, SUM(amount) 
+        FROM transactions 
+        WHERE user_id=? AND {date_filter} 
+        GROUP BY category, type
         """
         query_params = (user_id,)
 
@@ -439,11 +429,11 @@ def show_general_statistics(message):
     cursor.execute(expense_query, query_params)
     total_expense = cursor.fetchone()[0] or 0
 
-    # Форматируем числа с разделением разрядов пробелами
+    # Форматируем числа
     total_income_formatted = "{:,.2f}".format(total_income).replace(",", " ")
     total_expense_formatted = "{:,.2f}".format(total_expense).replace(",", " ")
 
-    # Получаем данные по категориям для доходов и расходов
+    # Получаем данные по категориям
     cursor.execute(category_query, query_params)
     category_data = cursor.fetchall()
     conn.commit()
@@ -460,15 +450,14 @@ def show_general_statistics(message):
     income_data = [(row[0], row[2]) for row in category_data if row[1] == 'income']
     expense_data = [(row[0], row[2]) for row in category_data if row[1] == 'expense']
 
-    # Объединяем данные для графика
+    # Генерация графика
     all_data = income_data + expense_data
     labels = [f"{row[0]} ({'Доход' if row in income_data else 'Расход'})" for row in all_data]
     values = [row[1] for row in all_data]
 
-    # Генерация графика
     img = generate_pie_chart(values, labels, f"Финансы за {message.text}")
 
-    # Отправка графика и сообщения
+    # Отправка графика
     bot.send_photo(
         message.chat.id,
         img,
@@ -501,6 +490,9 @@ def set_group_name(message):
 
     cursor.execute("SELECT group_id FROM groups WHERE name=?", (group_name,))
     group = cursor.fetchone()
+    if group_name.startswith("/"):
+        bot.send_message(user_id, "Недопустимое название группы! Попробуйте другое.")
+        return
 
     if group:
         bot.send_message(user_id, "Группа с таким названием уже существует! Попробуйте другое.")
@@ -514,41 +506,17 @@ def set_group_password(message, group_name):
     password = message.text
     user_id = message.from_user.id
     cursor = conn.cursor()
-
-    # Создаем новую группу с паролем и владельцем
+     # Создаем новую группу с паролем и владельцем
     cursor.execute("INSERT INTO groups (name, password, owner_id) VALUES (?, ?, ?)", (group_name, password, user_id))
     conn.commit()
-
+    
     # Получаем ID созданной группы
     cursor.execute("SELECT group_id FROM groups WHERE name=?", (group_name,))
     group_id = cursor.fetchone()[0]
-
-    # Удаляем старые категории пользователя/группы
-    cursor.execute("DELETE FROM selected_categories WHERE user_id=? OR group_id=?", (user_id, group_id))
-
-    # Добавляем стартовые категории для группы
-    starter_income_categories = ["Зарплата", "Другое"]
-    starter_expense_categories = [
-        "Продукты", "Развлечения", "Налоги", "Одежда", "Жильё", "Внеплановые"
-    ]
-
-    for category in starter_income_categories:
-        cursor.execute(
-            "INSERT INTO selected_categories (group_id, type, name) VALUES (?, ?, ?)",
-            (group_id, "income", category)
-        )
-
-    for category in starter_expense_categories:
-        cursor.execute(
-            "INSERT INTO selected_categories (group_id, type, name) VALUES (?, ?, ?)",
-            (group_id, "expense", category)
-        )
-
+    
     # Привязываем пользователя к группе
     cursor.execute("UPDATE users SET group_id=? WHERE user_id=?", (group_id, user_id))
-
     conn.commit()
-
     bot.send_message(user_id, f"Группа '{group_name}' создана!\nТеперь другие пользователи могут к ней присоединиться с помощью /join_group, введя пароль {password}")
 
 def check_group_membership(user_id):
@@ -576,33 +544,24 @@ def process_group_join(message):
 def verify_group_password(message, group_id, group_name, group_password):
     user_id = message.from_user.id
     entered_password = message.text
-
     if entered_password != group_password:
         bot.send_message(user_id, "Неверный пароль! Попробуйте снова.")
         return
 
-    cursor = conn.cursor()
-
-    # Удаляем старые категории пользователя
-    cursor.execute("DELETE FROM selected_categories WHERE user_id=?", (user_id,))
-
-    # Копируем категории группы для пользователя
-    cursor.execute("""
-        INSERT INTO selected_categories (user_id, type, name)
-        SELECT ?, type, name FROM selected_categories WHERE group_id=?
-    """, (user_id, group_id))
-
     # Привязываем пользователя к группе
+    cursor = conn.cursor()
     cursor.execute("UPDATE users SET group_id=? WHERE user_id=?", (group_id, user_id))
-
     conn.commit()
 
-    # Отправляем уведомление владельцу группы
-    cursor.execute("SELECT owner_id FROM groups WHERE group_id=?", (group_id,))
-    owner_id = cursor.fetchone()[0]
+    # Получаем информацию о пользователе
     user_info = message.from_user
     user_mention = user_info.username if user_info.username else user_info.first_name
 
+    # Получаем ID владельца группы
+    cursor.execute("SELECT owner_id FROM groups WHERE group_id=?", (group_id,))
+    owner_id = cursor.fetchone()[0]
+
+    # Отправляем уведомление владельцу группы
     if owner_id != user_id:  # Владелец не получает уведомление, если сам присоединяется
         bot.send_message(
             owner_id,
@@ -697,15 +656,26 @@ def choose_category_type_to_manage(message):
 
 def show_selected_categories(message, category_type):
     user_id = message.from_user.id
-    cursor.execute("""
-    SELECT name FROM selected_categories 
-    WHERE user_id=? AND type=?
-    """, (user_id, category_type))
-    selected_categories = [row[0] for row in cursor.fetchall()]
+    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
+    group = cursor.fetchone()
+    group_id = group[0] if group and group[0] else None
 
+    if group_id:
+        # Пользователь в группе: получаем категории группы
+        cursor.execute("""
+        SELECT name FROM selected_categories 
+        WHERE group_id=? AND type=?
+        """, (group_id, category_type))
+    else:
+        # Пользователь не в группе: получаем категории пользователя
+        cursor.execute("""
+        SELECT name FROM selected_categories 
+        WHERE user_id=? AND type=?
+        """, (user_id, category_type))
+
+    selected_categories = [row[0] for row in cursor.fetchall()]
     keyboard = create_reply_keyboard(selected_categories, False, 2)
     keyboard.add("Добавить категорию", "Удалить категорию", "Назад")
-
     bot.send_message(user_id, f"Ваши выбранные {category_type}:", reply_markup=keyboard)
     bot.register_next_step_handler(message, manage_selected_categories, category_type, selected_categories)
 
@@ -726,94 +696,110 @@ def manage_selected_categories(message, category_type, selected_categories):
 
 def add_category(message, category_type, selected_categories):
     user_id = message.from_user.id
+    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
+    group = cursor.fetchone()
+    group_id = group[0] if group and group[0] else None
+
     # Получаем базовые категории, которых нет в выбранных
-    cursor.execute("""
+    query = """
     SELECT name FROM base_categories 
     WHERE type=? AND name NOT IN ({})
-    """.format(",".join(["?"] * len(selected_categories))), [category_type] + selected_categories)
+    """.format(",".join(["?"] * len(selected_categories)))
+    params = [category_type] + selected_categories
+
+    cursor.execute(query, params)
     base_categories = [row[0] for row in cursor.fetchall()]
 
-    keyboard = create_reply_keyboard(base_categories, False, 2)
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for category in base_categories:
+        keyboard.add(types.KeyboardButton(category))
     keyboard.add("Другое", "Назад")
 
     bot.send_message(user_id, "Выберите категорию для добавления:", reply_markup=keyboard)
-    bot.register_next_step_handler(message, process_add_category, category_type, selected_categories)
+    bot.register_next_step_handler(message, process_add_category, category_type, selected_categories, group_id)
 
-def process_add_category(message, category_type, selected_categories):
+def process_add_category(message, category_type, selected_categories, group_id):
     if message.text == "Назад":
         show_selected_categories(message, category_type)
         return
-
     if message.text == "Другое":
         bot.send_message(message.chat.id, "Введите название новой категории:")
-        bot.register_next_step_handler(message, add_custom_category, category_type, selected_categories)
+        bot.register_next_step_handler(message, add_custom_category, category_type, selected_categories, group_id)
         return
 
     new_category = message.text
     user_id = message.from_user.id
 
-    # Получаем group_id пользователя
-    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
-    group_id = cursor.fetchone()[0]
-
     if group_id:
         # Добавляем категорию для группы
         cursor.execute("""
-            INSERT INTO selected_categories (group_id, type, name) VALUES (?, ?, ?)
+        INSERT INTO selected_categories (group_id, type, name) VALUES (?, ?, ?)
         """, (group_id, category_type, new_category))
-
-        # Удаляем старые категории у всех участников группы
-        cursor.execute("DELETE FROM selected_categories WHERE user_id IN (SELECT user_id FROM users WHERE group_id=?)", (group_id,))
-
-        # Копируем новые категории для всех участников группы
-        cursor.execute("""
-            INSERT INTO selected_categories (user_id, type, name)
-            SELECT user_id, type, name FROM selected_categories WHERE group_id=?
-        """, (group_id,))
     else:
         # Добавляем категорию для пользователя
         cursor.execute("""
-            INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)
+        INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)
         """, (user_id, category_type, new_category))
 
     conn.commit()
     bot.send_message(message.chat.id, f"Категория '{new_category}' добавлена!")
     show_selected_categories(message, category_type)
 
-def add_custom_category(message, category_type, selected_categories):
+def add_custom_category(message, category_type, selected_categories, group_id):
     user_id = message.from_user.id
     custom_category = message.text.strip()
-    
-    if not custom_category or custom_category in ["Назад", "назад"]:
-        bot.send_message(user_id, "Название категории не может быть таким. Попробуйте снова.")
-        bot.register_next_step_handler(message, add_custom_category, category_type, selected_categories)
+
+    if not custom_category:
+        bot.send_message(user_id, "Название категории не может быть пустым. Попробуйте снова.")
+        bot.register_next_step_handler(message, add_custom_category, category_type, selected_categories, group_id)
         return
-    
+
     # Проверяем, что категория еще не существует
-    cursor.execute("""
-    SELECT COUNT(*) FROM selected_categories 
-    WHERE user_id=? AND type=? AND name=?
-    """, (user_id, category_type, custom_category))
+    if group_id:
+        cursor.execute("""
+        SELECT COUNT(*) FROM selected_categories 
+        WHERE group_id=? AND type=? AND name=?
+        """, (group_id, category_type, custom_category))
+    else:
+        cursor.execute("""
+        SELECT COUNT(*) FROM selected_categories 
+        WHERE user_id=? AND type=? AND name=?
+        """, (user_id, category_type, custom_category))
+
     if cursor.fetchone()[0] > 0:
         bot.send_message(user_id, f"Категория '{custom_category}' уже существует!")
         show_selected_categories(message, category_type)
         return
-    
+
     # Добавляем новую категорию
-    cursor.execute("""
-    INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)
-    """, (user_id, category_type, custom_category))
+    if group_id:
+        cursor.execute("""
+        INSERT INTO selected_categories (group_id, type, name) VALUES (?, ?, ?)
+        """, (group_id, category_type, custom_category))
+    else:
+        cursor.execute("""
+        INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)
+        """, (user_id, category_type, custom_category))
+
     conn.commit()
-    
     bot.send_message(user_id, f"Категория '{custom_category}' успешно добавлена!")
     show_selected_categories(message, category_type)
 
 def delete_category(message, category_type, selected_categories):
     user_id = message.from_user.id
-    bot.send_message(user_id, "Выберите категорию для удаления:", reply_markup=create_reply_keyboard(selected_categories, True, 2))
-    bot.register_next_step_handler(message, process_delete_category, category_type)
+    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
+    group = cursor.fetchone()
+    group_id = group[0] if group and group[0] else None
 
-def process_delete_category(message, category_type):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for category in selected_categories:
+        keyboard.add(types.KeyboardButton(category))
+    keyboard.add("Назад")
+
+    bot.send_message(user_id, "Выберите категорию для удаления:", reply_markup=keyboard)
+    bot.register_next_step_handler(message, process_delete_category, category_type, group_id)
+
+def process_delete_category(message, category_type, group_id):
     if message.text == "Назад":
         show_selected_categories(message, category_type)
         return
@@ -821,28 +807,17 @@ def process_delete_category(message, category_type):
     category_to_delete = message.text
     user_id = message.from_user.id
 
-    # Получаем group_id пользователя
-    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
-    group_id = cursor.fetchone()[0]
-
     if group_id:
         # Удаляем категорию для группы
         cursor.execute("""
-            DELETE FROM selected_categories WHERE group_id=? AND type=? AND name=?
+        DELETE FROM selected_categories 
+        WHERE group_id=? AND type=? AND name=?
         """, (group_id, category_type, category_to_delete))
-
-        # Удаляем старые категории у всех участников группы
-        cursor.execute("DELETE FROM selected_categories WHERE user_id IN (SELECT user_id FROM users WHERE group_id=?)", (group_id,))
-
-        # Копируем новые категории для всех участников группы
-        cursor.execute("""
-            INSERT INTO selected_categories (user_id, type, name)
-            SELECT user_id, type, name FROM selected_categories WHERE group_id=?
-        """, (group_id,))
     else:
         # Удаляем категорию для пользователя
         cursor.execute("""
-            DELETE FROM selected_categories WHERE user_id=? AND type=? AND name=?
+        DELETE FROM selected_categories 
+        WHERE user_id=? AND type=? AND name=?
         """, (user_id, category_type, category_to_delete))
 
     conn.commit()
@@ -858,46 +833,32 @@ def process_delete_category(message, category_type):
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
-    cursor = conn.cursor()
 
     # Добавляем пользователя в таблицу users, если его там еще нет
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, group_id) VALUES (?, ?)", (user_id, None))
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, group_id) VALUES (?, ?)", (user_id, user_id))
 
-    # Проверяем, состоит ли пользователь в группе
-    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
-    group = cursor.fetchone()
-    group_id = group[0] if group and group[0] else None
+    # Проверяем, есть ли уже выбранные категории для пользователя
+    cursor.execute("SELECT COUNT(*) FROM selected_categories WHERE user_id=?", (user_id,))
+    if cursor.fetchone()[0] == 0:
+        # Добавляем стартовые категории для доходов
+        starter_income_categories = ["Зарплата", "Другое"]
+        for category in starter_income_categories:
+            cursor.execute(
+                "INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)",
+                (user_id, "income", category)
+            )
 
-    # Если пользователь состоит в группе, очищаем его личные категории и копируем категории группы
-    if group_id:
-        cursor.execute("DELETE FROM selected_categories WHERE user_id=?", (user_id,))
-        cursor.execute("""
-            INSERT INTO selected_categories (user_id, type, name)
-            SELECT ?, type, name FROM selected_categories WHERE group_id=?
-        """, (user_id, group_id))
-    else:
-        # Если пользователь не состоит в группе, проверяем наличие личных категорий
-        cursor.execute("SELECT COUNT(*) FROM selected_categories WHERE user_id=?", (user_id,))
-        if cursor.fetchone()[0] == 0:
-            # Добавляем стартовые категории для доходов
-            starter_income_categories = ["Зарплата", "Другое"]
-            for category in starter_income_categories:
-                cursor.execute(
-                    "INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)",
-                    (user_id, "income", category)
-                )
+        # Добавляем стартовые категории для расходов
+        starter_expense_categories = [
+            "Продукты", "Развлечения", "Налоги", "Одежда", "Жильё", "Внеплановые"
+        ]
+        for category in starter_expense_categories:
+            cursor.execute(
+                "INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)",
+                (user_id, "expense", category)
+            )
 
-            # Добавляем стартовые категории для расходов
-            starter_expense_categories = [
-                "Продукты", "Развлечения", "Налоги", "Одежда", "Жильё", "Внеплановые"
-            ]
-            for category in starter_expense_categories:
-                cursor.execute(
-                    "INSERT INTO selected_categories (user_id, type, name) VALUES (?, ?, ?)",
-                    (user_id, "expense", category)
-                )
-
-    conn.commit()
+        conn.commit()
 
     bot.send_message(user_id, "Привет! Я бот для учета доходов и расходов. Выберите действие:", reply_markup=get_main_menu())
     
