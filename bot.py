@@ -56,12 +56,15 @@ CREATE TABLE IF NOT EXISTS base_categories (
 # Таблица выбранных категорий
 cursor.execute('''CREATE TABLE IF NOT EXISTS selected_categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,       -- ID пользователя (NULL, если категория принадлежит группе)
-    group_id INTEGER,      -- ID группы (NULL, если категория принадлежит пользователю)
-    type TEXT,             -- Тип категории: "income" или "expense"
-    name TEXT              -- Название категории
+    user_id INTEGER,
+    group_id INTEGER,
+    name TEXT,
+    type TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(user_id),
+    FOREIGN KEY (group_id) REFERENCES groups(group_id)
 )''')
 conn.commit()
+
 
 # Категории доходов
 INCOME_CATEGORIES = ["Зарплата", "Подарки", "Прочее"]
@@ -135,35 +138,26 @@ def get_categories(user_id, category_type):
     categories = [row[0] for row in cursor.fetchall()]
     return categories
 
-# Выбор категории для добавления дохода
-def choose_income_category(message):
-    if message.text == "Назад":
-        bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
-        return
-    user_id = message.from_user.id
-    cursor.execute("SELECT name FROM selected_categories WHERE user_id=? AND type='income'", (user_id,))
-    available_categories = [row[0] for row in cursor.fetchall()]
-    if message.text not in available_categories:
-        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=create_reply_keyboard(available_categories, True, 1))
-        bot.register_next_step_handler(message, choose_income_category)
-        return
-    category = message.text
-    bot.send_message(message.chat.id, "Введите сумму:")
-    bot.register_next_step_handler(message, enter_amount, "income", category)
-
-
-# Выбор категории для добавления расхода
+# Выбор категории для добавления расхода/дохода
 def choose_category(message, trans_type):
     if message.text == "Назад":
         bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
         return
-    user_id = message.from_user.id
-    cursor.execute("SELECT name FROM selected_categories WHERE user_id=? AND type='expense'", (user_id,))
-    available_categories = [row[0] for row in cursor.fetchall()]
-    if message.text not in available_categories:
-        bot.send_message(message.chat.id, "Пожалуйста, выберите категорию из списка.", reply_markup=create_reply_keyboard(available_categories, True, 2))
+
+    categories = get_categories(message.from_user.id, trans_type)
+    if not categories:
+        bot.send_message(message.chat.id, "Список категорий пуст. Добавьте новые категории.")
+        return
+
+    if message.text not in categories:
+        bot.send_message(
+            message.chat.id,
+            "Пожалуйста, выберите категорию из списка.",
+            reply_markup=create_reply_keyboard(categories, True, 2)
+        )
         bot.register_next_step_handler(message, choose_category, trans_type)
         return
+
     bot.send_message(message.chat.id, "Введите сумму:")
     bot.register_next_step_handler(message, enter_amount, trans_type, message.text)
 
@@ -286,14 +280,24 @@ def show_category_statistics(message, transaction_type):
         return
 
     cursor = conn.cursor()
-
+    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
+    group = cursor.fetchone()
+    group_id = group[0] if group and group[0] else None
     # Получаем данные по категориям и датам
-    cursor.execute(f"""
-        SELECT category, date, SUM(amount) 
-        FROM transactions 
-        WHERE user_id=? AND type=? AND {date_filter}
-        GROUP BY category, date
-    """, (user_id, transaction_type))
+    if group_id:
+        cursor.execute(f"""
+            SELECT category, date, SUM(amount) 
+            FROM transactions 
+            WHERE group_id=? AND type=? AND {date_filter}
+            GROUP BY category, date
+        """, (group_id, transaction_type))
+    else:
+        cursor.execute(f"""
+            SELECT category, date, SUM(amount) 
+            FROM transactions 
+            WHERE user_id=? AND type=? AND {date_filter}
+            GROUP BY category, date
+        """, (user_id, transaction_type))
     raw_data = cursor.fetchall()
     conn.commit()
 
@@ -506,17 +510,26 @@ def set_group_password(message, group_name):
     password = message.text
     user_id = message.from_user.id
     cursor = conn.cursor()
-     # Создаем новую группу с паролем и владельцем
+
+    # Создаем новую группу с паролем и владельцем
     cursor.execute("INSERT INTO groups (name, password, owner_id) VALUES (?, ?, ?)", (group_name, password, user_id))
     conn.commit()
-    
+
     # Получаем ID созданной группы
     cursor.execute("SELECT group_id FROM groups WHERE name=?", (group_name,))
     group_id = cursor.fetchone()[0]
-    
+
     # Привязываем пользователя к группе
     cursor.execute("UPDATE users SET group_id=? WHERE user_id=?", (group_id, user_id))
     conn.commit()
+
+    # Копируем личные категории пользователя в группу
+    cursor.execute("""
+        INSERT INTO selected_categories (group_id, name, type)
+        SELECT ?, name, type FROM selected_categories WHERE user_id=?
+    """, (group_id, user_id))
+    conn.commit()
+
     bot.send_message(user_id, f"Группа '{group_name}' создана!\nТеперь другие пользователи могут к ней присоединиться с помощью /join_group, введя пароль {password}")
 
 def check_group_membership(user_id):
@@ -551,6 +564,17 @@ def verify_group_password(message, group_id, group_name, group_password):
     # Привязываем пользователя к группе
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET group_id=? WHERE user_id=?", (group_id, user_id))
+    conn.commit()
+
+     # Удаляем личные категории пользователя (если они есть)
+    cursor.execute("DELETE FROM selected_categories WHERE user_id=?", (user_id,))
+    conn.commit()
+
+    # Копируем категории группы для пользователя
+    cursor.execute("""
+        INSERT INTO selected_categories (user_id, name, type)
+        SELECT ?, name, type FROM selected_categories WHERE group_id=?
+    """, (user_id, group_id))
     conn.commit()
 
     # Получаем информацию о пользователе
@@ -891,15 +915,13 @@ def manage_categories(message):
 def transaction_type(message):
     user_id = message.from_user.id
     if message.text == "Добавить расход":
-        cursor.execute("SELECT name FROM selected_categories WHERE user_id=? AND type='expense'", (user_id,))
-        categories = [row[0] for row in cursor.fetchall()]
+        categories = get_categories(user_id, "expense")
         bot.send_message(user_id, "Выберите категорию:", reply_markup=create_reply_keyboard(categories, True, 2))
         bot.register_next_step_handler(message, choose_category, "expense")
     else:
-        cursor.execute("SELECT name FROM selected_categories WHERE user_id=? AND type='income'", (user_id,))
-        categories = [row[0] for row in cursor.fetchall()]
+        categories = get_categories(user_id, "income")
         bot.send_message(user_id, "Выберите категорию:", reply_markup=create_reply_keyboard(categories, True, 1))
-        bot.register_next_step_handler(message, choose_income_category)
+        bot.register_next_step_handler(message, choose_category, "income")
 
 # показать статистику для пользователя, или для группы
 @bot.message_handler(func=lambda message: message.text == "Статистика")
@@ -920,7 +942,7 @@ def show_group_info(message):
     user_id = message.from_user.id
     cursor = conn.cursor()
 
-    # Проверяем, состоит ли пользователь в группе
+    # Check if the user belongs to a group
     cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
     group = cursor.fetchone()
     if not group or not group[0]:
@@ -929,20 +951,26 @@ def show_group_info(message):
 
     group_id = group[0]
 
-    # Проверяем, является ли пользователь владельцем группы
+    # Check if the user is the owner of the group
     cursor.execute("SELECT name, password FROM groups WHERE group_id=? AND owner_id=?", (group_id, user_id))
     owner_group = cursor.fetchone()
 
     if owner_group:
-        # Пользователь является владельцем группы
+        # User is the owner of the group
         group_name, group_password = owner_group
         bot.send_message(user_id, f"Информация о вашей группе:\n"
                                   f"Название: {group_name}\n"
                                   f"Пароль: {group_password}")
     else:
-        # Пользователь принадлежит к группе, но не является её создателем
+        # User belongs to a group but is not the owner
         cursor.execute("SELECT name FROM groups WHERE group_id=?", (group_id,))
-        group_name = cursor.fetchone()[0]
+        group_data = cursor.fetchone()
+
+        if not group_data:
+            bot.send_message(user_id, "Произошла ошибка. Группа не найдена.")
+            return
+
+        group_name = group_data[0]
         bot.send_message(user_id, f"Вы состоите в группе:\n"
                                   f"Название: {group_name}")
 
