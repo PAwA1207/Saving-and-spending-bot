@@ -698,9 +698,11 @@ def show_selected_categories(message, category_type):
         """, (user_id, category_type))
 
     selected_categories = [row[0] for row in cursor.fetchall()]
-    keyboard = create_reply_keyboard(selected_categories, False, 2)
-    keyboard.add("Добавить категорию", "Удалить категорию", "Назад")
-    bot.send_message(user_id, f"Ваши выбранные {category_type}:", reply_markup=keyboard)
+    keyboard = create_reply_keyboard(["Добавить категорию", "Удалить категорию"], True, 1)
+    bot_message = f"Ваши выбранные {category_type}:\n"
+    for i in selected_categories:
+        bot_message+="\n"+i
+    bot.send_message(user_id, bot_message, reply_markup=keyboard)
     bot.register_next_step_handler(message, manage_selected_categories, category_type, selected_categories)
 
 def manage_selected_categories(message, category_type, selected_categories):
@@ -734,9 +736,7 @@ def add_category(message, category_type, selected_categories):
     cursor.execute(query, params)
     base_categories = [row[0] for row in cursor.fetchall()]
 
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for category in base_categories:
-        keyboard.add(types.KeyboardButton(category))
+    keyboard = create_reply_keyboard(base_categories, False, 2)
     keyboard.add("Другое", "Назад")
 
     bot.send_message(user_id, "Выберите категорию для добавления:", reply_markup=keyboard)
@@ -773,12 +773,11 @@ def add_custom_category(message, category_type, selected_categories, group_id):
     user_id = message.from_user.id
     custom_category = message.text.strip()
 
-    if not custom_category:
-        bot.send_message(user_id, "Название категории не может быть пустым. Попробуйте снова.")
+    if not custom_category or custom_category in ["Другое","Назад"]:
+        bot.send_message(user_id, "Название категории не может быть таким. Попробуйте снова.")
         bot.register_next_step_handler(message, add_custom_category, category_type, selected_categories, group_id)
         return
 
-    # Проверяем, что категория еще не существует
     if group_id:
         cursor.execute("""
         SELECT COUNT(*) FROM selected_categories 
@@ -857,9 +856,9 @@ def process_delete_category(message, category_type, group_id):
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
-
+    cursor = conn.cursor()
     # Добавляем пользователя в таблицу users, если его там еще нет
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, group_id) VALUES (?, ?)", (user_id, user_id))
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, group_id) VALUES (?, ?)", (user_id, None))
 
     # Проверяем, есть ли уже выбранные категории для пользователя
     cursor.execute("SELECT COUNT(*) FROM selected_categories WHERE user_id=?", (user_id,))
@@ -882,23 +881,27 @@ def start(message):
                 (user_id, "expense", category)
             )
 
-        conn.commit()
+    conn.commit()
 
-    bot.send_message(user_id, "Привет! Я бот для учета доходов и расходов. Выберите действие:", reply_markup=get_main_menu())
+    bot.send_message(user_id, "Привет! Я бот для учета доходов и расходов.\nЯ помогу тебе и твоей семье вести бюджет\nЧтобы узнать подробности, нажми на кнопку \"Справка\", или введи /help\nПриятного пользования!", reply_markup=get_main_menu())
     
 
 @bot.message_handler(commands=['help'])
 @bot.message_handler(func=lambda message: message.text=="Справка")
 def help(message):
-    bot.send_message(message.from_user.id,("Ты можешь выбрать команду, нажать по ней, и она запустится. Или можешь ввести её самостоятельно.\n"
-                                           "Вот что я умею:\n"
-                                           "/start - запустить, или перезапустить бота.\n"
-                                           "/help - список всех команд\n"
-                                           "/categories - меню редактирования категорий\n"
-                                           "/create_group - создать группу для ведения общего бюджета\n"
-                                           "/join_group - подключиться к существующей группе\n"
-                                           "/leave_group - выйти из группы, в которой вы состоите\n"
-                                           "/group_info - Посмотреть данные группы"
+    bot.send_message(message.from_user.id,("Справка:\nТы можешь вести свой личный, или семейный бюджет, для этого тебе всего лишь надо:\n\n"
+                                            "1. Определиться, хочешь ли ты вести свою статистику расходов и доходов, или же хочешь создать группу с другими пользователями и вести общий бюджет (/create_group).\n\n"
+                                            "2. Чтобы начать вести статистику, рекомендую настроить для себя, или своей группы категории дохода/расхода. Ты можешь выбирать категории из списка базовых, или добавлять свои (/categories).\n\n"
+                                            "3. Можешь посмотреть статистику по доходам и расходам через главное меню:\n\"Общая\" - посмотреть статистику по всем доходам и расходам,\n\"По категориям\" - посмотреть только расходы, или доходы отдельно\n\"Мои расходы\" и \"Мои доходы\" - списки с возможностью удалять добавленные доходы/расходы\n\n"
+                                            "4. Если в процессе использования бота ты столкнешься с проблемами, или багами - попробуй меня перезагрузить при помощи /start, если это не помогло, напиши моему создателю: @Pavel0777\n\n"
+                                            "А вот и список всех команд. Ты можешь выбрать команду, нажать по ней, и она запустится. Или можешь ввести её самостоятельно в чат:\n"
+                                            "/start - запустить, или перезапустить бота.\n"
+                                            "/help - список всех команд\n"
+                                            "/categories - меню редактирования категорий\n"
+                                            "/create_group - создать группу для ведения общего бюджета\n"
+                                            "/join_group - подключиться к существующей группе\n"
+                                            "/leave_group - выйти из группы, в которой вы состоите\n"
+                                            "/group_info - посмотреть данные группы"
                                            )
                     )
 
@@ -920,13 +923,13 @@ def transaction_type(message):
         bot.register_next_step_handler(message, choose_category, "expense")
     else:
         categories = get_categories(user_id, "income")
-        bot.send_message(user_id, "Выберите категорию:", reply_markup=create_reply_keyboard(categories, True, 1))
+        bot.send_message(user_id, "Выберите категорию:", reply_markup=create_reply_keyboard(categories, True, 2))
         bot.register_next_step_handler(message, choose_category, "income")
 
 # показать статистику для пользователя, или для группы
 @bot.message_handler(func=lambda message: message.text == "Статистика")
 def show_statistics_menu(message):
-    bot.send_message(message.chat.id, "Выберите тип статистики:", reply_markup=create_reply_keyboard(STATISTIC_TYPES,True, 1))
+    bot.send_message(message.chat.id, "Выберите тип статистики:", reply_markup=create_reply_keyboard(STATISTIC_TYPES,True, 2))
     bot.register_next_step_handler(message, choose_statistics_type)
 
 #Создание группы по команде
@@ -996,7 +999,6 @@ def leave_group(message):
     # Проверяем, к какой группе принадлежит пользователь
     cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
     group = cursor.fetchone()
-    
     if not group or group[0] is None:
         bot.send_message(user_id, "Вы не состоите ни в одной группе.")
         return
@@ -1019,10 +1021,26 @@ def leave_group(message):
     # Проверяем, является ли пользователь владельцем группы
     if owner_id == user_id:
         # Владелец удаляет группу
-        cursor.execute("DELETE FROM groups WHERE group_id=?", (group_id,))
-        cursor.execute("UPDATE users SET group_id=NULL WHERE group_id=?", (group_id,))
-        conn.commit()
-        bot.send_message(user_id, f"Группа '{group_name}' удалена. Вы вернулись к личному бюджету.")
+        try:
+            # Удаляем все транзакции, связанные с группой
+            cursor.execute("DELETE FROM transactions WHERE group_id=?", (group_id,))
+            
+            # Удаляем все категории, связанные с группой
+            cursor.execute("DELETE FROM selected_categories WHERE group_id=?", (group_id,))
+            
+            # Удаляем всех пользователей из группы
+            cursor.execute("UPDATE users SET group_id=NULL WHERE group_id=?", (group_id,))
+            
+            # Удаляем саму группу
+            cursor.execute("DELETE FROM groups WHERE group_id=?", (group_id,))
+            
+            conn.commit()
+            
+            bot.send_message(user_id, f"Группа '{group_name}' удалена. Вы вернулись к личному бюджету.")
+        except Exception as e:
+            conn.rollback()
+            bot.send_message(user_id, "Произошла ошибка при удалении группы. Попробуйте позже.")
+            print(f"Ошибка при удалении группы: {e}")
     else:
         # Участник покидает группу
         cursor.execute("UPDATE users SET group_id=NULL WHERE user_id=?", (user_id,))
