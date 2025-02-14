@@ -8,6 +8,7 @@ matplotlib.use('Agg')  # Устанавливаем бэкенд Agg
 import matplotlib.pyplot as plt
 
 # Инициализация бота
+#7835118712:AAGZO2XLppym9xHHJZwai2qrqVYCvDKAIg0
 bot_api_key = "7794911342:AAGKwLs3DfpAt8r9eKSFzrzriM0zYIr75Ys"
 bot = telebot.TeleBot(bot_api_key)
 
@@ -25,8 +26,7 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (
                     type TEXT,
                     date TEXT
                 )''')
-conn.commit()
-cursor = conn.cursor()
+
 # Создание таблицы групп
 cursor.execute('''CREATE TABLE IF NOT EXISTS groups (
     group_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,15 +34,13 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS groups (
     password TEXT,
     owner_id INTEGER
 )''')
-conn.commit()
-cursor = conn.cursor()
+
 # Создание таблицы пользователей 
 cursor.execute('''CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
                     group_id INTEGER,
                     FOREIGN KEY (group_id) REFERENCES groups(group_id)
                 )''')
-conn.commit()
 
 # Таблица базовых категорий
 cursor.execute('''
@@ -63,6 +61,17 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS selected_categories (
     FOREIGN KEY (user_id) REFERENCES users(user_id),
     FOREIGN KEY (group_id) REFERENCES groups(group_id)
 )''')
+
+# Создание таблицы для накоплений
+cursor.execute('''CREATE TABLE IF NOT EXISTS savings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    group_id INTEGER,
+    amount REAL,
+    date TEXT,
+    is_starting INTEGER DEFAULT 0
+)''')
+
 conn.commit()
 
 
@@ -80,10 +89,10 @@ BASE_CATEGORIES = {
 }
 
 #Кнопки главного меню
-MENU_BUTTONS = ["Добавить расход", "Добавить доход", "Статистика", "Справка"]
+MENU_BUTTONS = ["Добавить расход", "Добавить доход", "Статистика", "Мои накопления", "Справка"]
 
 # Типы транзакций
-TRANSACTION_TYPES = ["Расходы", "Доходы"]
+TRANSACTION_TYPES = ["Расходы", "Доходы", "Накопления"]
 
 # Типы статистики
 STATISTIC_TYPES = ["Общая", "По категориям", "Мои расходы", "Мои доходы"]
@@ -93,6 +102,9 @@ PERIOD_TYPES = ["Сутки", "Неделя", "Месяц", "Год", "Всё в
 
 # Виды периода для просмотра всех поступлений, или трат
 IN_OR_EX_PERIOD_TYPES = ["За неделю", "За 2 недели", "За месяц", "За всё время"]
+
+# Кнопки меню накоплений
+SAVINGS_MENU_BUTTONS = ["Добавить", "Вычесть", "Статистика", "Назад"]
 
 for category_type, categories in BASE_CATEGORIES.items():
     for category_name in categories:
@@ -105,9 +117,9 @@ def create_reply_keyboard(buttons, need_back_button=True, row_width = 1):
     keyboard_buttons = []
     for button in buttons:
         keyboard_buttons.append(button)
-    keyboard.add(*keyboard_buttons)
     if need_back_button:
-        keyboard.add(types.KeyboardButton("Назад"))
+        keyboard_buttons.append("Назад")
+    keyboard.add(*keyboard_buttons)
     return keyboard
 
 # Функция для главного меню
@@ -283,21 +295,23 @@ def show_category_statistics(message, transaction_type):
     cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
     group = cursor.fetchone()
     group_id = group[0] if group and group[0] else None
+
     # Получаем данные по категориям и датам
     if group_id:
         cursor.execute(f"""
-            SELECT category, date, SUM(amount) 
-            FROM transactions 
-            WHERE group_id=? AND type=? AND {date_filter}
-            GROUP BY category, date
+        SELECT category, date, SUM(amount) 
+        FROM transactions 
+        WHERE group_id=? AND type=? AND {date_filter}
+        GROUP BY category, date
         """, (group_id, transaction_type))
     else:
         cursor.execute(f"""
-            SELECT category, date, SUM(amount) 
-            FROM transactions 
-            WHERE user_id=? AND type=? AND {date_filter}
-            GROUP BY category, date
+        SELECT category, date, SUM(amount) 
+        FROM transactions 
+        WHERE user_id=? AND type=? AND {date_filter}
+        GROUP BY category, date
         """, (user_id, transaction_type))
+
     raw_data = cursor.fetchall()
     conn.commit()
 
@@ -318,16 +332,19 @@ def show_category_statistics(message, transaction_type):
     all_dates = sorted(set(date for data in categories.values() for date in data.keys()))
     category_labels = list(categories.keys())
     values_by_category = []
-
     for category in category_labels:
         values = [categories[category].get(date, 0) for date in all_dates]
         values_by_category.append(values)
+
+    # Вычисляем общую сумму
+    total_amount = sum(amount for category_data in categories.values() for amount in category_data.values())
 
     # Генерация графика
     img = generate_bar_chart_with_legend(all_dates, category_labels, values_by_category, transaction_type, message.text)
 
     # Отправка графика
-    bot.send_photo(message.chat.id, img, caption=f"📊 Статистика {transaction_type.lower()} по категориям")
+    bot.send_photo(message.chat.id, img, caption=f"Статистика {transaction_type.lower()} по категориям\n📊 Общая сумма {transaction_type.lower()} за {message.text.lower()}: {total_amount:.2f} руб.")
+
     bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
 
 # Создание столбчатой диаграммы с легендой
@@ -375,6 +392,29 @@ def generate_bar_chart_with_legend(dates, categories, values, transaction_type, 
     img.seek(0)
     plt.close(fig)
 
+    return img
+
+def generate_bar_chart(dates, values, title):
+    fig, ax = plt.subplots(figsize=(12, 8))
+    bar_width = 0.6
+    positions = range(len(dates))
+
+    # Создаем столбцы
+    ax.bar(positions, values, width=bar_width, color="skyblue")
+
+    # Настройка осей
+    ax.set_title(title)
+    ax.set_xlabel("Дата")
+    ax.set_ylabel("Сумма (руб.)")
+    ax.set_xticks(positions)
+    ax.set_xticklabels(dates, rotation=45, ha="right")
+    ax.grid(axis="y")
+
+    # Сохранение графика в буфер
+    img = io.BytesIO()
+    plt.savefig(img, format='png', bbox_inches='tight')
+    img.seek(0)
+    plt.close(fig)
     return img
 
 def show_general_statistics(message):
@@ -432,10 +472,12 @@ def show_general_statistics(message):
     total_income = cursor.fetchone()[0] or 0
     cursor.execute(expense_query, query_params)
     total_expense = cursor.fetchone()[0] or 0
+    net_profit = total_income - total_expense
 
     # Форматируем числа
     total_income_formatted = "{:,.2f}".format(total_income).replace(",", " ")
     total_expense_formatted = "{:,.2f}".format(total_expense).replace(",", " ")
+    net_profit_formatted = "{:,.2f}".format(net_profit).replace(",", " ")
 
     # Получаем данные по категориям
     cursor.execute(category_query, query_params)
@@ -465,11 +507,11 @@ def show_general_statistics(message):
     bot.send_photo(
         message.chat.id,
         img,
-        caption=f"📊 Доход: {total_income_formatted} руб.\n💸 Расход: {total_expense_formatted} руб."
+        caption=f"📊 Доход: {total_income_formatted} руб.\n💸 Расход: {total_expense_formatted} руб.\n💰 Чистая прибыль: {net_profit_formatted} руб."
     )
     bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
 
-# Выбор категории для вывода статистики (расходы, или доходы)
+# Выбор категории для вывода статистики
 def choose_category_statistics_type(message):
     if message.text == "Назад":
         show_statistics_menu(message)
@@ -480,6 +522,11 @@ def choose_category_statistics_type(message):
         bot.register_next_step_handler(message, choose_category_statistics_type)
         return
 
+    if message.text == "Накопления":
+        bot.send_message(message.chat.id, "Выберите период:", reply_markup=create_reply_keyboard(PERIOD_TYPES, True, 2))
+        bot.register_next_step_handler(message, show_savings_statistics, True)
+        return
+    
     transaction_type = "expense" if message.text == "Расходы" else "income"
 
     # Показываем клавиатуру для выбора периода
@@ -490,16 +537,17 @@ def choose_category_statistics_type(message):
 def set_group_name(message):
     group_name = message.text
     user_id = message.from_user.id
-    cursor = conn.cursor()
 
+    if group_name.startswith("/"):
+        bot.send_message(user_id, "Недопустимое название группы! Попробуйте ещё раз: /create_group")
+        return
+    
+    cursor = conn.cursor()
     cursor.execute("SELECT group_id FROM groups WHERE name=?", (group_name,))
     group = cursor.fetchone()
-    if group_name.startswith("/"):
-        bot.send_message(user_id, "Недопустимое название группы! Попробуйте другое.")
-        return
 
     if group:
-        bot.send_message(user_id, "Группа с таким названием уже существует! Попробуйте другое.")
+        bot.send_message(user_id, "Группа с таким названием уже существует! Попробуйте ещё раз: /create_group")
         return
 
     bot.send_message(user_id, "придумайте пароль для подключения к группе:")
@@ -542,12 +590,15 @@ def check_group_membership(user_id):
 def process_group_join(message):
     group_name = message.text
     user_id = message.from_user.id
+    if group_name.startswith("/"):
+        bot.send_message(user_id, "Недопустимое название группы! Попробуйте ещё раз: /join_group")
+        return
     cursor = conn.cursor()
     # Получаем данные группы (ID и пароль)
     cursor.execute("SELECT group_id, password FROM groups WHERE name=?", (group_name,))
     group = cursor.fetchone()
     if not group:
-        bot.send_message(user_id, "Такой группы не существует. Попробуйте снова.")
+        bot.send_message(user_id, "Такой группы не существует. Попробуйте ещё раз: /join_group")
         return
     group_id, group_password = group
     bot.send_message(user_id, "Введите пароль для подключения к группе:")
@@ -847,6 +898,163 @@ def process_delete_category(message, category_type, group_id):
     bot.send_message(message.chat.id, f"Категория '{category_to_delete}' удалена!")
     show_selected_categories(message, category_type)
 
+def handle_savings_menu(message):
+    if message.text == "Назад":
+        bot.send_message(message.chat.id, "Главное меню", reply_markup=get_main_menu())
+        return
+    action = message.text.lower()
+    if action not in ["добавить", "вычесть", "статистика"]:
+        bot.send_message(message.chat.id, "Выберите действие из списка.", reply_markup=get_main_menu())
+        return
+    if action == "статистика":
+        # Показываем клавиатуру для выбора периода
+        bot.send_message(message.chat.id, "Выберите период:", reply_markup=create_reply_keyboard(PERIOD_TYPES, True, 2))
+        bot.register_next_step_handler(message, show_savings_statistics, False)
+        return
+    bot.send_message(message.chat.id, f"Введите сумму для {action}:")
+    bot.register_next_step_handler(message, process_savings_amount, action)
+
+def process_savings_amount(message, action):
+    if message.text == "Назад":
+        show_savings_menu(message)
+        return
+    if message.text.startswith("/"):
+        bot.send_message(user_id, "Произошла ошибка, попробуйте ещё раз.")
+        show_savings_menu(message)
+        return
+    try:
+        amount = float(message.text)
+        if action == "вычесть":
+            amount = -abs(amount)  # Превращаем сумму в отрицательную для вычитания
+        user_id = message.from_user.id
+        cursor = conn.cursor()
+        # Проверяем, состоит ли пользователь в группе
+        cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
+        group = cursor.fetchone()
+        group_id = group[0] if group and group[0] else None
+        # Добавляем запись в таблицу накоплений
+        cursor.execute(
+            "INSERT INTO savings (user_id, group_id, amount, date) VALUES (?, ?, ?, ?)",
+            (user_id, group_id, amount, datetime.date.today().isoformat())
+        )
+        conn.commit()
+        bot.send_message(user_id, "Запись успешно добавлена!")
+        show_savings_menu(message)
+    except ValueError:
+        bot.send_message(message.chat.id, "Введите корректную сумму.")
+        bot.register_next_step_handler(message, process_savings_amount, action)
+
+def process_starting_savings(message):  
+    if message.text == "Назад":
+        return
+    if message.text.startswith("/"):
+        bot.send_message(user_id, "Произошла ошибка, попробуйте ещё раз.")
+        return
+    try:
+        starting_amount = float(message.text)
+        user_id = message.from_user.id
+        cursor = conn.cursor()
+        # Проверяем, состоит ли пользователь в группе
+        cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
+        group = cursor.fetchone()
+        group_id = group[0] if group and group[0] else None
+        # Удаляем предыдущие записи о стартовой сумме
+        cursor.execute("DELETE FROM savings WHERE user_id=? AND group_id=? AND is_starting=1", (user_id, group_id))
+        # Добавляем новую стартовую сумму
+        cursor.execute(
+            "INSERT INTO savings (user_id, group_id, amount, date, is_starting) VALUES (?, ?, ?, ?, 1)",
+            (user_id, group_id, starting_amount, datetime.date.today().isoformat())
+        )
+        conn.commit()
+        bot.send_message(user_id, f"Стартовая сумма накоплений установлена: {starting_amount} руб.", reply_markup=get_main_menu())
+    except ValueError:
+        bot.send_message(message.chat.id, "Введите корректную сумму.")
+        bot.register_next_step_handler(message, process_starting_savings)
+
+def get_savings_data(user_id, period):
+    cursor = conn.cursor()
+    # Определяем фильтр даты
+    if period == "Сутки":
+        date_filter = f"date = '{datetime.date.today().isoformat()}'"
+    elif period == "Неделя":
+        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=7)).isoformat()}'"
+    elif period == "Месяц":
+        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=30)).isoformat()}'"
+    elif period == "Год":
+        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=365)).isoformat()}'"
+    elif period == "Всё время":
+        date_filter = f"date >= '{(datetime.date.today() - datetime.timedelta(days=100000)).isoformat()}'"
+    else:
+        return None
+    # Проверяем, состоит ли пользователь в группе
+    cursor.execute("SELECT group_id FROM users WHERE user_id=?", (user_id,))
+    group = cursor.fetchone()
+    group_id = group[0] if group and group[0] else None
+    # Формируем запрос для получения данных
+    if group_id:
+        query = f"""
+        SELECT date, SUM(amount) 
+        FROM savings 
+        WHERE group_id=? AND ({date_filter} OR is_starting=1)
+        GROUP BY date
+        """
+        params = (group_id,)
+    else:
+        query = f"""
+        SELECT date, SUM(amount) 
+        FROM savings 
+        WHERE user_id=? AND ({date_filter} OR is_starting=1)
+        GROUP BY date
+        """
+        params = (user_id,)
+    cursor.execute(query, params)
+    savings_data = cursor.fetchall()
+    conn.commit()
+    # Если период не "всё время", исключаем стартовую сумму
+    if period != "Всё время":
+        if group_id:
+            cursor.execute("SELECT SUM(amount) FROM savings WHERE group_id=? AND is_starting=1", (group_id,))
+        else:
+            cursor.execute("SELECT SUM(amount) FROM savings WHERE user_id=? AND is_starting=1", (user_id,))
+        starting_amount = cursor.fetchone()[0] or 0  # Преобразуем None в 0
+        # Вычитаем стартовую сумму из каждой записи
+        savings_data = [(date, amount - starting_amount) for date, amount in savings_data]
+    return savings_data
+
+def show_savings_statistics(message, called_from_statistics_menu):
+    if message.text == "Назад":
+        if called_from_statistics_menu:
+            message.text = "По категориям"
+            choose_statistics_type(message)
+            return
+        else:
+            show_savings_menu(message)
+            return
+    user_id = message.from_user.id
+    period = message.text
+    # Получаем данные о накоплениях
+    savings_data = get_savings_data(user_id, period)
+    if not savings_data:
+        bot.send_message(message.chat.id, f"За выбранный период ({period}) нет данных.", reply_markup=get_main_menu())
+        return
+    # Группируем данные по датам
+    dates = [row[0] for row in savings_data]
+    amounts = [row[1] for row in savings_data]
+    total_savings = sum(amounts)  # Общая сумма накоплений
+    # Генерация графика
+    img = generate_bar_chart(dates, amounts, f"Накопления за {period.lower()}")
+    # Отправка графика
+    bot.send_photo(message.chat.id, img, caption=f"📊 Статистика накоплений за {period.lower()}")
+    # Отправка общей суммы накоплений
+    bot.send_message(message.chat.id, f"Общая сумма накоплений за {period.lower()}: {total_savings:.2f} руб.")
+    if called_from_statistics_menu:
+        message.text = "По категориям"
+        choose_statistics_type(message)
+        return
+    else:
+        show_savings_menu(message)
+        return
+
 
 
 #\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\ОБРАБОТЧИКИ///////////////////////////////////////////////
@@ -893,11 +1101,13 @@ def help(message):
                                             "1. Определиться, хочешь ли ты вести свою статистику расходов и доходов, или же хочешь создать группу с другими пользователями и вести общий бюджет (/create_group).\n\n"
                                             "2. Чтобы начать вести статистику, рекомендую настроить для себя, или своей группы категории дохода/расхода. Ты можешь выбирать категории из списка базовых, или добавлять свои (/categories).\n\n"
                                             "3. Можешь посмотреть статистику по доходам и расходам через главное меню:\n\"Общая\" - посмотреть статистику по всем доходам и расходам,\n\"По категориям\" - посмотреть только расходы, или доходы отдельно\n\"Мои расходы\" и \"Мои доходы\" - списки с возможностью удалять добавленные доходы/расходы\n\n"
-                                            "4. Если в процессе использования бота ты столкнешься с проблемами, или багами - попробуй меня перезагрузить при помощи /start, если это не помогло, напиши моему создателю: @Pavel0777\n\n"
+                                            "4. Ещё ты можешь вести статистику по накоплениям, для этого есть кнопка \"Мои накопления\". Прежде всего рекомендую записать твои текущие накопления: /set_starting_savings, они будут учитываться в статистике по накоплениям за всё время."
+                                            "5. Если в процессе работы я зависну, или ты столкнешься с проблемами, багами - попробуй меня перезагрузить при помощи /start, если это не помогло, напиши моему создателю: @Pavel0777\n\n"
                                             "А вот и список всех команд. Ты можешь выбрать команду, нажать по ней, и она запустится. Или можешь ввести её самостоятельно в чат:\n"
                                             "/start - запустить, или перезапустить бота.\n"
                                             "/help - список всех команд\n"
                                             "/categories - меню редактирования категорий\n"
+                                            "/set_starting_savings - добавить стартовую сумму для накоплений\n"
                                             "/create_group - создать группу для ведения общего бюджета\n"
                                             "/join_group - подключиться к существующей группе\n"
                                             "/leave_group - выйти из группы, в которой вы состоите\n"
@@ -1170,7 +1380,15 @@ def show_all_transactions(call):
     bot.answer_callback_query(call.id, "Полный список загружен.")
     bot.send_message(call.message.chat.id, text, reply_markup=get_main_menu())
 
+@bot.message_handler(func=lambda message: message.text == "Мои накопления")
+def show_savings_menu(message):
+    bot.send_message(message.chat.id, "Меню накоплений:", reply_markup=create_reply_keyboard(SAVINGS_MENU_BUTTONS, False, 2))
+    bot.register_next_step_handler(message, handle_savings_menu)
 
+@bot.message_handler(commands=['set_starting_savings'])
+def set_starting_savings(message):
+    bot.send_message(message.chat.id, "Введите стартовую сумму для накоплений:")
+    bot.register_next_step_handler(message, process_starting_savings)
 
 
 # Переход в меню когда пользователь отправляет произвольное сообщение (должно быть в конце)
